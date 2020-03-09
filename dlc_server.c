@@ -6,7 +6,7 @@
 #include "stdio.h"
 #include "src/mongoose.h"
 
-static const char *s_http_port = "8018";
+static char *s_http_port = "3000";
 static char *s_dlc_path = "/data/duc/test_interface";
 static struct mg_serve_http_opts s_http_server_opts;
 static char s_tdr_stat[512] = { 0 };
@@ -107,18 +107,29 @@ static void socket_ev_handler(struct mg_connection *nc, int ev, void *p) {
 
   switch (ev) {
     case MG_EV_ACCEPT:
-      mg_send(nc, "/test/live\n", 10);
       break;
     case MG_EV_RECV:
-      if (strcmp((char*)io->buf, "/test/live") == 0) {
+      if (io->len < 4) {
+        printf("==> received msg with wrong fromat!\n");
+        mbuf_remove(io, io->len);       // Discard message from recv buffer
+        break;
+      }
+
+      // first 4 bytes for length
+      unsigned int len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);   
+      if (strcmp((char*)io->buf+4, "/test/live") == 0) {
         printf("==> test live\n");
         mg_send(nc, "{\"result\":\"0.000000\"}", 21);
-      } else if (strcmp((char*)io->buf, "/dlc/run") == 0) {
+      } else if (strcmp((char*)io->buf+4, "/dlc/run") == 0) {
         printf("==> run dlc\n");
         socket_run_dlc_command(nc, (char*)(io->buf+8), s_dlc_path);
-      } else if (strcmp((char*)io->buf, "/dlc/res") == 0) {
+      } else if (strcmp((char*)io->buf+4, "/dlc/res") == 0) {
         printf("==> check result of tdr\n");
         socket_check_tdr_status(nc);
+      } else {
+        // echo the message for testing
+        printf("received len %d : %s\n", len, ((char*)io->buf+4));
+        mg_send(nc, io->buf, io->len);
       }
       mbuf_remove(io, io->len);       // Discard message from recv buffer
       break;
@@ -160,10 +171,10 @@ int main(int argc, char *argv[]) {
 
   mg_mgr_init(&mgr, NULL);
 
-  if (argc == 2 && strcmp(argv[1], "-o") == 0) {
+  if (argc >= 2 && strcmp(argv[1], "-o") == 0) {
     printf("Start socket server\n");
-    mg_bind(&mgr, "8018", socket_ev_handler);
-    printf("Listen on port 8018\n");
+    mg_bind(&mgr, "3000", socket_ev_handler);
+    printf("Listen on port 3000\n");
     for (;;) {
       mg_mgr_poll(&mgr, 1000);
     }
