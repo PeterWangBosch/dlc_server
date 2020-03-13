@@ -4,72 +4,64 @@
  */
 
 #include "stdio.h"
-#include "src/mongoose.h"
+#include "mongoose/mongoose.h"
 
-static char *s_http_port = "3000";
-static char *s_dlc_path = "/data/duc/test_interface";
-static struct mg_serve_http_opts s_http_server_opts;
 static char s_tdr_stat[512] = { 0 };
 static unsigned int i_tdr_stat_len = 0;
 
-/*keep this for testing*/
-static void handle_sum_call(struct mg_connection *nc, struct http_message *hm) {
-  char n1[100], n2[100];
-  double result;
+/**
+ * CGW API Handler
+**/
+struct cgw_api_handler {
+  char * api;
+  mg_event_handler_t fn;
+  struct mg_connection * nc;
+};
 
-  /* Get form variables */
-  mg_get_http_var(&hm->body, "n1", n1, sizeof(n1));
-  mg_get_http_var(&hm->body, "n2", n2, sizeof(n2));
+/**
+ * core state machine
+**/
+#define STAT_INVALID  0xFF
+#define STAT_IDLE  0x00
+#define DLC_PKG_NEW 0x01
+#define DLC_PKG_DOWNLOADING 0x02
+#define DLC_PKG_READY 0x03
+#define DLC_PKG_BAD 0x04
 
-  /* Send headers */
-  mg_printf(nc, "%s", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+#define ORCH_CON_ERR 0x10
+#define ORCH_PKG_DOWNLOADING 0x20
+#define ORCH_PKG_READY 0x30
+#define ORCH_PKG_BAD 0x40
+#define ORCH_TDR_RUN 0x50
+#define ORCH_TDR_FAIL 0x60
+#define ORCH_TDR_SUCC 0x70
+static unsigned char g_stat = 0;
+static unsigned char g_stat_lock = 0;
+struct context {
+  struct mg_connection * dmc;
+  struct cgw_api_handler cgw_api_pkg_new;
+  struct cgw_api_handler cgw_api_pkg_stat;
+  struct cgw_api_handler cgw_api_tdr_run;
+  struct cgw_api_handler cgw_api_tdr_stat;
+  char * downloader;
+  char * pkg_cdn_url;
+  void * data;
+};
+struct context g_ctx;
 
-  /* Compute the result and send it back as a JSON object */
-  result = strtod(n1, NULL) + strtod(n2, NULL);
-  mg_printf_http_chunk(nc, "{ \"result\": %lf }", result);
-  mg_send_http_chunk(nc, "", 0); /* Send empty chunk, the end of response */
+static unsigned char g_cgw_thread_exit_flag = 0;
+
+static void core_state_handler(unsigned char);
+
+static int dmc_downloader_run(struct mg_connection *nc, char* url, char* dlc_path) {
+    (void) nc;
+    (void) url;
+    (void) dlc_path;
+    return 1;
 }
 
-static void check_tdr_status(struct mg_connection *nc) {
-    mg_printf(nc, "%s", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
-    mg_printf_http_chunk(nc, "{ \"TDR status\": \"%s\"}", s_tdr_stat);
-    mg_send_http_chunk(nc, "", 0);
-    return;
-}
-
-static void socket_check_tdr_status(struct mg_connection *nc) {
-    mg_send(nc, s_tdr_stat, i_tdr_stat_len);
-    return;
-}
-
-static void run_tdr_command(struct mg_connection *nc) {
-    FILE *fp;
-    char cmd[256] = {0};
-    char output[300];
-
-    strcpy(cmd, "ls -la ");
-    if ((fp = popen(cmd, "r")) != NULL) {
-        mg_printf(nc, "%s", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
-        mg_printf_http_chunk(nc, "{ \"TDR status\": \"Going to run\"}");
-        mg_send_http_chunk(nc, "", 0);
-    } else {
-        mg_printf(nc, "%s", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
-        mg_printf_http_chunk(nc, "{ \"TDR status\": \"Failed to run\"}");
-        mg_send_http_chunk(nc, "", 0);
-        return;
-    }
-
-    while (fgets(output, sizeof(output)-1, fp) != NULL){
-        if ((i_tdr_stat_len + sizeof(output)) >= 512) {
-          sprintf(s_tdr_stat, "%s", output);
-          i_tdr_stat_len = strlen(s_tdr_stat);
-        } else {
-          sprintf(s_tdr_stat, "%s\n %s", s_tdr_stat, output);
-          i_tdr_stat_len = strlen(s_tdr_stat);
-        }
-    }
-
-    pclose(fp);
+static int dmc_downloader_stat() {
+    return 1;
 }
 
 static void socket_run_dlc_command(struct mg_connection *nc, char* url, char* dlc_path) {
@@ -97,40 +89,23 @@ static void socket_run_dlc_command(struct mg_connection *nc, char* url, char* dl
         }
     }
 
-    pclose(fp);
+   pclose(fp);
 }
 
-
-static void socket_ev_handler(struct mg_connection *nc, int ev, void *p) {
+static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
   struct mbuf *io = &nc->recv_mbuf;
+  unsigned int len = 0;
   (void) p;
 
   switch (ev) {
     case MG_EV_ACCEPT:
       break;
     case MG_EV_RECV:
-      if (io->len < 4) {
-        printf("==> received msg with wrong fromat!\n");
-        mbuf_remove(io, io->len);       // Discard message from recv buffer
-        break;
-      }
-
       // first 4 bytes for length
-      unsigned int len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);   
-      if (strcmp((char*)io->buf+4, "/test/live") == 0) {
-        printf("==> test live\n");
-        mg_send(nc, "{\"result\":\"0.000000\"}", 21);
-      } else if (strcmp((char*)io->buf+4, "/dlc/run") == 0) {
-        printf("==> run dlc\n");
-        socket_run_dlc_command(nc, (char*)(io->buf+8), s_dlc_path);
-      } else if (strcmp((char*)io->buf+4, "/dlc/res") == 0) {
-        printf("==> check result of tdr\n");
-        socket_check_tdr_status(nc);
-      } else {
-        // echo the message for testing
-        printf("received len %d : %s\n", len, ((char*)io->buf+4));
-        mg_send(nc, io->buf, io->len);
-      }
+      len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);   
+      //TODO: parse JSON
+      (void) len;
+      core_state_handler(STAT_INVALID);
       mbuf_remove(io, io->len);       // Discard message from recv buffer
       break;
     default:
@@ -138,19 +113,37 @@ static void socket_ev_handler(struct mg_connection *nc, int ev, void *p) {
   }
 }
 
-static void ev_handler(struct mg_connection *nc, int ev, void *ev_data) {
+//---------------------------------------------------------------------------
+// Communication with Orchestrator on CGW
+//--------------------------------------------------------------------------- 
+
+static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
+  (void) hm;
 
   switch (ev) {
-    case MG_EV_HTTP_REQUEST:
-      if (mg_vcmp(&hm->uri, "/test/live") == 0) {
-        handle_sum_call(nc, hm); /* Handle RESTful call */
-      } else if (mg_vcmp(&hm->uri, "/tdr/run") == 0) {
-        run_tdr_command(nc);
-      } else if (mg_vcmp(&hm->uri, "/tdr/res") == 0) {
-        check_tdr_status(nc);
+    case MG_EV_CONNECT:
+      if (*(int *) ev_data != 0) {
+        printf("Orchestrator pkg new: connect failed\n");
+        g_stat = ORCH_CON_ERR;
+        g_cgw_thread_exit_flag = 1;
       } else {
-        //mg_serve_http(nc, hm, s_http_server_opts); /* Serve static content */
+        g_ctx.cgw_api_pkg_new.nc = nc;
+        g_stat = ORCH_PKG_DOWNLOADING;
+        printf("Orchestrator pkg new: connected to send msg\n");
+      }
+      break;
+    case MG_EV_HTTP_REPLY:
+      //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
+      g_stat = ORCH_PKG_DOWNLOADING;
+      nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+      g_cgw_thread_exit_flag = 1;
+      break;
+    case MG_EV_CLOSE:
+      g_ctx.cgw_api_pkg_new.nc = NULL;
+      if (g_cgw_thread_exit_flag == 0) {
+        printf("Orchestrator pkg new: connection closed\n");
+        g_cgw_thread_exit_flag = 1;
       }
       break;
     default:
@@ -158,88 +151,243 @@ static void ev_handler(struct mg_connection *nc, int ev, void *ev_data) {
   }
 }
 
+static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data) {
+  struct http_message *hm = (struct http_message *) ev_data;
+  (void) hm;
+
+  switch (ev) {
+    case MG_EV_CONNECT:
+      if (*(int *) ev_data != 0) {
+        printf("Orchestrator pkg status: connect failed\n");
+        g_stat = ORCH_PKG_BAD;
+        g_cgw_thread_exit_flag = 1;
+      } else {
+        g_ctx.cgw_api_pkg_stat.nc = nc;
+        g_stat = ORCH_PKG_DOWNLOADING;
+        printf("Orchestrator pkg status: connected to send msg\n");
+      }
+      break;
+    case MG_EV_HTTP_REPLY:
+      //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
+      //g_stat = ORCH_PKG_DOWNLOADING;
+      g_stat = ORCH_PKG_READY;
+      nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+      g_cgw_thread_exit_flag = 1;
+      break;
+    case MG_EV_CLOSE:
+      g_ctx.cgw_api_pkg_stat.nc = NULL;
+      if (g_cgw_thread_exit_flag == 0) {
+        printf("Orchestrator pkg status: closed connection\n");
+        g_cgw_thread_exit_flag = 1;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data) {
+  struct http_message *hm = (struct http_message *) ev_data;
+  (void) hm;
+
+  switch (ev) {
+    case MG_EV_CONNECT:
+      if (*(int *) ev_data != 0) {
+        printf("Orchestrator tdr run: connect failed\n");
+        g_stat = ORCH_CON_ERR;
+        g_cgw_thread_exit_flag = 1;
+      } else {
+        g_ctx.cgw_api_tdr_run.nc = nc;
+        g_stat = ORCH_TDR_RUN;
+        printf("Orchestrator tdr run: connected to send msg\n");
+      }
+      break;
+    case MG_EV_HTTP_REPLY:
+      //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
+      // g_stat = ORCH_TDR_FAIL;
+      g_stat = ORCH_TDR_RUN;
+      nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+      g_cgw_thread_exit_flag = 1;
+      break;
+    case MG_EV_CLOSE:
+      g_ctx.cgw_api_tdr_run.nc = NULL;
+      if (g_cgw_thread_exit_flag == 0) {
+        printf("Orchestrator tdr run: closed connection\n");
+        g_cgw_thread_exit_flag = 1;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data) {
+  struct http_message *hm = (struct http_message *) ev_data;
+  (void)hm;
+
+  switch (ev) {
+    case MG_EV_CONNECT:
+      g_ctx.cgw_api_tdr_stat.nc = nc;
+      if (*(int *) ev_data != 0) {
+        printf("Orchestrator tdr status: connect failed\n");
+        g_stat = ORCH_CON_ERR;
+        g_cgw_thread_exit_flag = 1;
+      } else {
+        g_ctx.cgw_api_tdr_stat.nc = nc;
+        g_stat = ORCH_TDR_RUN;
+        printf("Orchestrator tdr status: connected to send msg\n");
+      }
+      break;
+    case MG_EV_HTTP_REPLY:
+      //TODO: parse JSON, if error then g_stat = ORCH_TDR_FAIL;
+      // g_stat = ORCH_TDR_SUCC;
+      g_stat = ORCH_TDR_RUN;
+      nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+      g_cgw_thread_exit_flag = 1;
+      break;
+    case MG_EV_CLOSE:
+      g_ctx.cgw_api_tdr_stat.nc = NULL;
+      if (g_cgw_thread_exit_flag == 0) {
+        printf("Orchestrator tdr status: closed connection\n");
+        g_cgw_thread_exit_flag = 1;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+static void * cgw_msg_thread(void *param) {
+  struct mg_mgr mgr;
+  struct cgw_api_handler * handler = (struct cgw_api_handler *) param;
+
+  mg_mgr_init(&mgr, NULL);
+  mg_connect_http(&mgr, handler->fn, handler->api, NULL, NULL);
+
+  while (g_cgw_thread_exit_flag == 0) {
+    if (g_stat_lock)
+      continue;
+
+    // run until one api request end
+    g_stat_lock = 1;
+    mg_mgr_poll(&mgr, 300);
+  }
+  g_stat_lock = 0;
+
+  mg_mgr_free(&mgr);
+  return NULL;
+}
+
+//---------------------------------------------------------------------------
+// Core state machine
+//--------------------------------------------------------------------------- 
+static void core_state_handler(unsigned char reset) {
+  struct mbuf *io = NULL;
+
+  // force to reset
+  if (reset != STAT_INVALID) { 
+    g_stat = reset;
+    return;
+  }
+
+  switch (g_stat) {
+    case STAT_IDLE:
+      break;
+    case DLC_PKG_NEW:
+      // TODO: parse received JSON
+      io = &g_ctx.dmc->recv_mbuf;
+      if (dmc_downloader_run(g_ctx.dmc, (char*)(io->buf+8), g_ctx.downloader)) {
+        g_stat = DLC_PKG_DOWNLOADING; 
+      } else {
+        g_stat = DLC_PKG_BAD;
+        mg_send(g_ctx.dmc, "{\"result\":\"Start downloader failed\n\"}", 40);
+      }
+      break;
+    case DLC_PKG_DOWNLOADING:
+      if (dmc_downloader_stat() < 0) {
+        g_stat = DLC_PKG_BAD;
+        mg_send(g_ctx.dmc, "{\"result\":\"Start downloader failed\n\"}", 40);
+      } else if (dmc_downloader_stat() > 0) {
+        // TODO: verify checksum of downloaded pkg
+        g_stat = DLC_PKG_READY;
+        mg_send(g_ctx.dmc, "{\"result\":\"IDCM downloading finished\n\"}", 40);
+      } else {
+        mg_send(g_ctx.dmc, "{\"result\":\"Start downloader failed\n\"}", 40);
+      }
+      break;
+    case DLC_PKG_READY:
+      mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_pkg_new)); 
+      break;
+    case ORCH_CON_ERR:
+      break;
+    case ORCH_PKG_DOWNLOADING:
+      mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_pkg_stat)); 
+      break;
+    case ORCH_PKG_BAD:
+      break;
+    case ORCH_PKG_READY:
+      mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_tdr_run)); 
+      break;
+    case ORCH_TDR_RUN:
+      mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_tdr_stat)); 
+      break;
+    case ORCH_TDR_FAIL:
+      break;
+    case ORCH_TDR_SUCC:
+      mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\n\"}", 31);
+      break;
+    default:
+      break;
+  } 
+}
+//---------------------------------------------------------------------------
+// Main
+//---------------------------------------------------------------------------
+static void init_context() {
+  g_ctx.dmc = NULL;
+
+  g_ctx.cgw_api_pkg_new.api = "http://127.0.0.1:8018/pkg/new";
+  g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
+  g_ctx.cgw_api_pkg_new.nc = NULL;
+  g_ctx.cgw_api_pkg_stat.api = "http://127.0.0.1:8018/pkg/sta";
+  g_ctx.cgw_api_pkg_stat.fn = cgw_handler_pkg_stat;
+  g_ctx.cgw_api_pkg_stat.nc = NULL;
+  g_ctx.cgw_api_tdr_run.api = "http://127.0.0.1:8018/tdr/run";
+  g_ctx.cgw_api_tdr_run.fn = cgw_handler_tdr_run;
+  g_ctx.cgw_api_tdr_run.nc = NULL;
+  g_ctx.cgw_api_tdr_stat.api = "http://127.0.0.1:8018/tdr/stat";
+  g_ctx.cgw_api_tdr_stat.fn = cgw_handler_tdr_stat;
+  g_ctx.cgw_api_tdr_stat.nc = NULL;
+  
+  g_ctx.downloader = "/data/duc/test_interface/dlc"; 
+}
+
 int main(int argc, char *argv[]) {
   struct mg_mgr mgr;
-  struct mg_connection *nc;
-  struct mg_bind_opts bind_opts;
-  int i;
-  char *cp;
-  const char *err_str;
-#if MG_ENABLE_SSL
-  const char *ssl_cert = NULL;
-#endif
+
+  init_context();
 
   mg_mgr_init(&mgr, NULL);
 
+  printf("==Start socket server==\n");
   if (argc >= 2 && strcmp(argv[1], "-o") == 0) {
-    printf("Start socket server\n");
-    mg_bind(&mgr, "3000", socket_ev_handler);
+    // Listen to specidied port
+    mg_bind(&mgr, argv[2], dmc_msg_handler);
+    printf("Listen on port %s\n", argv[2]);
+  } else {
+    // by default, listen to 3000
+    mg_bind(&mgr, "3000", dmc_msg_handler);
     printf("Listen on port 3000\n");
-    for (;;) {
-      mg_mgr_poll(&mgr, 1000);
-    }
-    mg_mgr_free(&mgr);
-    return 1;
   }
 
-  /* Use current binary directory as document root */
-  if (argc > 0 && ((cp = strrchr(argv[0], DIRSEP)) != NULL)) {
-    *cp = '\0';
-    s_http_server_opts.document_root = argv[0];
-  }
-
-  /* Process command line options to customize HTTP server */
-  for (i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "-D") == 0 && i + 1 < argc) {
-      mgr.hexdump_file = argv[++i];
-    } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
-      s_http_server_opts.document_root = argv[++i];
-    } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
-      s_http_port = argv[++i];
-    } else if (strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
-      s_http_server_opts.auth_domain = argv[++i];
-    } else if (strcmp(argv[i], "-P") == 0 && i + 1 < argc) {
-      s_http_server_opts.global_auth_file = argv[++i];
-    } else if (strcmp(argv[i], "-A") == 0 && i + 1 < argc) {
-      s_http_server_opts.per_directory_auth_file = argv[++i];
-    } else if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
-      s_http_server_opts.url_rewrites = argv[++i];
-#if MG_ENABLE_HTTP_CGI
-    } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
-      s_http_server_opts.cgi_interpreter = argv[++i];
-#endif
-#if MG_ENABLE_SSL
-    } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-      ssl_cert = argv[++i];
-#endif
-    } else {
-      fprintf(stderr, "Unknown option: [%s]\n", argv[i]);
-      exit(1);
-    }
-  }
-
-  /* Set HTTP server options */
-  memset(&bind_opts, 0, sizeof(bind_opts));
-  bind_opts.error_string = &err_str;
-#if MG_ENABLE_SSL
-  if (ssl_cert != NULL) {
-    bind_opts.ssl_cert = ssl_cert;
-  }
-#endif
-  nc = mg_bind_opt(&mgr, s_http_port, ev_handler, bind_opts);
-  if (nc == NULL) {
-    fprintf(stderr, "Error starting server on port %s: %s\n", s_http_port,
-            *bind_opts.error_string);
-    exit(1);
-  }
-
-  mg_set_protocol_http_websocket(nc);
-  s_http_server_opts.enable_directory_listing = "yes";
-
-  printf("Starting RESTful server on port %s, serving %s\n", s_http_port,
-         s_http_server_opts.document_root);
   for (;;) {
+    if (g_stat_lock)
+      continue;
+
+    g_stat_lock = 1;
+
     mg_mgr_poll(&mgr, 1000);
+    g_stat_lock = 0;
   }
   mg_mgr_free(&mgr);
 

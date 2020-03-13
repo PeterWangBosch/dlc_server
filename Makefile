@@ -1,7 +1,9 @@
 PROG = dlc_server
 MODULE_CFLAGS=-DMG_ENABLE_THREADS -DMG_ENABLE_HTTP_WEBSOCKET=0
 
-SOURCES = $(PROG).c src/mongoose.c
+CJSON_SRCS = cJSON/cJSON.c cJSON/cJSON_Utils.c
+
+SOURCES = $(PROG).c mongoose/mongoose.c $(CJSON_SRCS)
 CFLAGS = -g -W -Wall -Werror -I../.. -Wno-unused-function $(CFLAGS_EXTRA) $(MODULE_CFLAGS)
 
 ifneq ($(OS), Windows_NT)
