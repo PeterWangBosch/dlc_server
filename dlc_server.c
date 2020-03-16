@@ -6,13 +6,14 @@
 #include "stdio.h"
 #include "mongoose/mongoose.h"
 
-static char s_tdr_stat[512] = { 0 };
-static unsigned int i_tdr_stat_len = 0;
+/* reserved buffer to save memory */
+static char g_cmd_buf[1024];
+static char g_cmd_output[1024];
 
 /**
  * CGW API Handler
 **/
-struct cgw_api_handler {
+struct bs_cgw_api_handler {
   char * api;
   mg_event_handler_t fn;
   struct mg_connection * nc;
@@ -37,59 +38,63 @@ struct cgw_api_handler {
 #define ORCH_TDR_SUCC 0x70
 static unsigned char g_stat = 0;
 static unsigned char g_stat_lock = 0;
-struct context {
+struct bs_context {
   struct mg_connection * dmc;
-  struct cgw_api_handler cgw_api_pkg_new;
-  struct cgw_api_handler cgw_api_pkg_stat;
-  struct cgw_api_handler cgw_api_tdr_run;
-  struct cgw_api_handler cgw_api_tdr_stat;
+  unsigned char cgw_thread_exit;
+  unsigned char downloader_thread_exit;
+  struct bs_cgw_api_handler cgw_api_pkg_new;
+  struct bs_cgw_api_handler cgw_api_pkg_stat;
+  struct bs_cgw_api_handler cgw_api_tdr_run;
+  struct bs_cgw_api_handler cgw_api_tdr_stat;
   char * downloader;
   char * pkg_cdn_url;
+  char * cmd_buf;
+  char * cmd_output;
+  
   void * data;
 };
-struct context g_ctx;
-
-static unsigned char g_cgw_thread_exit_flag = 0;
-
+struct bs_context g_ctx;
 static void core_state_handler(unsigned char);
 
-static int dmc_downloader_run(struct mg_connection *nc, char* url, char* dlc_path) {
-    (void) nc;
-    (void) url;
-    (void) dlc_path;
-    return 1;
+//---------------------------------------------------------------------------
+// Communication with DMC
+//--------------------------------------------------------------------------- 
+static int dmc_downloader_stat(struct bs_context * p_ctx) {
+  (void) p_ctx;
+  return 1;
 }
 
-static int dmc_downloader_stat() {
-    return 1;
+static void * dmc_downloader_thread(void * param) {
+  FILE *fp;
+  struct bs_context * p_ctx = (struct bs_context *) param;
+
+  // TODO: memeset g_cmd_buf to zero and check the length of url and dlc_path
+  strcpy(p_ctx->cmd_buf, p_ctx->downloader);
+  strcat(p_ctx->cmd_buf, " ");
+  strcat(p_ctx->cmd_buf, p_ctx->pkg_cdn_url);    
+
+  if ((fp = popen(p_ctx->cmd_buf, "r")) != NULL) {
+    mg_send(p_ctx->dmc, "{ \"DLC status\": \"Going to run\"}", 31);
+  } else {
+    mg_send(p_ctx->dmc, "{ \"DLC status\": \"Failed to run\"}", 32);
+    return NULL;
+  }
+
+  printf("--> curl started!\n");
+  while (!p_ctx->downloader_thread_exit &&
+         fgets(p_ctx->cmd_output, 1024, fp) != NULL) {
+    
+    printf("==> %s\n", p_ctx->cmd_output);
+  }
+  printf("--> curl ended!\n");
+
+  pclose(fp);
+  return NULL;
 }
 
-static void socket_run_dlc_command(struct mg_connection *nc, char* url, char* dlc_path) {
-    FILE *fp;
-    char cmd[256] = {0};
-    char output[300];
-
-    // DLC command
-    sprintf(cmd, "echo \"%s 2000000\" >> %s", url, dlc_path );
-
-    if ((fp = popen(cmd, "r")) != NULL) {
-        mg_send(nc, "{ \"DLC status\": \"Going to run\"}", 31);
-    } else {
-        mg_send(nc, "{ \"DLC status\": \"Failed to run\"}", 32);
-        return;
-    }
-
-    while (fgets(output, sizeof(output)-1, fp) != NULL){
-        if ((i_tdr_stat_len + sizeof(output)) >= 512) {
-          sprintf(s_tdr_stat, "%s", output);
-          i_tdr_stat_len = strlen(s_tdr_stat);
-        } else {
-          sprintf(s_tdr_stat, "%s\n %s", s_tdr_stat, output);
-          i_tdr_stat_len = strlen(s_tdr_stat);
-        }
-    }
-
-   pclose(fp);
+static int dmc_downloader_run(struct bs_context * p_ctx) {
+  mg_start_thread(dmc_downloader_thread, (void *) p_ctx);
+  return 1;
 }
 
 static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
@@ -99,6 +104,8 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
 
   switch (ev) {
     case MG_EV_ACCEPT:
+      g_ctx.dmc = nc;
+      core_state_handler(STAT_INVALID);//??test
       break;
     case MG_EV_RECV:
       // first 4 bytes for length
@@ -116,7 +123,6 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
 //---------------------------------------------------------------------------
 // Communication with Orchestrator on CGW
 //--------------------------------------------------------------------------- 
-
 static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
   (void) hm;
@@ -126,7 +132,7 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
       if (*(int *) ev_data != 0) {
         printf("Orchestrator pkg new: connect failed\n");
         g_stat = ORCH_CON_ERR;
-        g_cgw_thread_exit_flag = 1;
+        g_ctx.cgw_thread_exit = 1;
       } else {
         g_ctx.cgw_api_pkg_new.nc = nc;
         g_stat = ORCH_PKG_DOWNLOADING;
@@ -137,13 +143,13 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       g_stat = ORCH_PKG_DOWNLOADING;
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-      g_cgw_thread_exit_flag = 1;
+      g_ctx.cgw_thread_exit = 1;
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_pkg_new.nc = NULL;
-      if (g_cgw_thread_exit_flag == 0) {
+      if (g_ctx.cgw_thread_exit == 0) {
         printf("Orchestrator pkg new: connection closed\n");
-        g_cgw_thread_exit_flag = 1;
+        g_ctx.cgw_thread_exit = 1;
       }
       break;
     default:
@@ -160,7 +166,7 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
       if (*(int *) ev_data != 0) {
         printf("Orchestrator pkg status: connect failed\n");
         g_stat = ORCH_PKG_BAD;
-        g_cgw_thread_exit_flag = 1;
+        g_ctx.cgw_thread_exit = 1;
       } else {
         g_ctx.cgw_api_pkg_stat.nc = nc;
         g_stat = ORCH_PKG_DOWNLOADING;
@@ -172,13 +178,13 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
       //g_stat = ORCH_PKG_DOWNLOADING;
       g_stat = ORCH_PKG_READY;
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-      g_cgw_thread_exit_flag = 1;
+      g_ctx.cgw_thread_exit = 1;
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_pkg_stat.nc = NULL;
-      if (g_cgw_thread_exit_flag == 0) {
+      if (g_ctx.cgw_thread_exit == 0) {
         printf("Orchestrator pkg status: closed connection\n");
-        g_cgw_thread_exit_flag = 1;
+        g_ctx.cgw_thread_exit = 1;
       }
       break;
     default:
@@ -195,7 +201,7 @@ static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data)
       if (*(int *) ev_data != 0) {
         printf("Orchestrator tdr run: connect failed\n");
         g_stat = ORCH_CON_ERR;
-        g_cgw_thread_exit_flag = 1;
+        g_ctx.cgw_thread_exit = 1;
       } else {
         g_ctx.cgw_api_tdr_run.nc = nc;
         g_stat = ORCH_TDR_RUN;
@@ -207,13 +213,13 @@ static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data)
       // g_stat = ORCH_TDR_FAIL;
       g_stat = ORCH_TDR_RUN;
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-      g_cgw_thread_exit_flag = 1;
+      g_ctx.cgw_thread_exit = 1;
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_tdr_run.nc = NULL;
-      if (g_cgw_thread_exit_flag == 0) {
+      if (g_ctx.cgw_thread_exit == 0) {
         printf("Orchestrator tdr run: closed connection\n");
-        g_cgw_thread_exit_flag = 1;
+        g_ctx.cgw_thread_exit = 1;
       }
       break;
     default:
@@ -231,7 +237,7 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
       if (*(int *) ev_data != 0) {
         printf("Orchestrator tdr status: connect failed\n");
         g_stat = ORCH_CON_ERR;
-        g_cgw_thread_exit_flag = 1;
+        g_ctx.cgw_thread_exit = 1;
       } else {
         g_ctx.cgw_api_tdr_stat.nc = nc;
         g_stat = ORCH_TDR_RUN;
@@ -243,13 +249,13 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
       // g_stat = ORCH_TDR_SUCC;
       g_stat = ORCH_TDR_RUN;
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-      g_cgw_thread_exit_flag = 1;
+      g_ctx.cgw_thread_exit = 1;
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_tdr_stat.nc = NULL;
-      if (g_cgw_thread_exit_flag == 0) {
+      if (g_ctx.cgw_thread_exit == 0) {
         printf("Orchestrator tdr status: closed connection\n");
-        g_cgw_thread_exit_flag = 1;
+        g_ctx.cgw_thread_exit = 1;
       }
       break;
     default:
@@ -259,20 +265,20 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
 
 static void * cgw_msg_thread(void *param) {
   struct mg_mgr mgr;
-  struct cgw_api_handler * handler = (struct cgw_api_handler *) param;
+  struct bs_cgw_api_handler * handler = (struct bs_cgw_api_handler *) param;
 
   mg_mgr_init(&mgr, NULL);
   mg_connect_http(&mgr, handler->fn, handler->api, NULL, NULL);
 
-  while (g_cgw_thread_exit_flag == 0) {
+  while (g_ctx.cgw_thread_exit == 0) {
     if (g_stat_lock)
       continue;
 
     // run until one api request end
     g_stat_lock = 1;
     mg_mgr_poll(&mgr, 300);
+    g_stat_lock = 0;
   }
-  g_stat_lock = 0;
 
   mg_mgr_free(&mgr);
   return NULL;
@@ -282,7 +288,6 @@ static void * cgw_msg_thread(void *param) {
 // Core state machine
 //--------------------------------------------------------------------------- 
 static void core_state_handler(unsigned char reset) {
-  struct mbuf *io = NULL;
 
   // force to reset
   if (reset != STAT_INVALID) { 
@@ -290,24 +295,27 @@ static void core_state_handler(unsigned char reset) {
     return;
   }
 
+  // test
+  g_stat = DLC_PKG_NEW;
+
   switch (g_stat) {
     case STAT_IDLE:
       break;
     case DLC_PKG_NEW:
       // TODO: parse received JSON
-      io = &g_ctx.dmc->recv_mbuf;
-      if (dmc_downloader_run(g_ctx.dmc, (char*)(io->buf+8), g_ctx.downloader)) {
-        g_stat = DLC_PKG_DOWNLOADING; 
+      if (dmc_downloader_run(&g_ctx)) {
+        g_stat = DLC_PKG_DOWNLOADING;
+        mg_send(g_ctx.dmc, "{\"result\":\"IDCM downloading start\n\"}", 48);
       } else {
         g_stat = DLC_PKG_BAD;
-        mg_send(g_ctx.dmc, "{\"result\":\"Start downloader failed\n\"}", 40);
+        mg_send(g_ctx.dmc, "{\"result\":\"IDCM downloading failed\n\"}", 40);
       }
       break;
     case DLC_PKG_DOWNLOADING:
-      if (dmc_downloader_stat() < 0) {
+      if (dmc_downloader_stat(&g_ctx) < 0) {
         g_stat = DLC_PKG_BAD;
         mg_send(g_ctx.dmc, "{\"result\":\"Start downloader failed\n\"}", 40);
-      } else if (dmc_downloader_stat() > 0) {
+      } else if (dmc_downloader_stat(&g_ctx) > 0) {
         // TODO: verify checksum of downloaded pkg
         g_stat = DLC_PKG_READY;
         mg_send(g_ctx.dmc, "{\"result\":\"IDCM downloading finished\n\"}", 40);
@@ -346,6 +354,9 @@ static void core_state_handler(unsigned char reset) {
 static void init_context() {
   g_ctx.dmc = NULL;
 
+  g_ctx.cgw_thread_exit = 0;
+  g_ctx.downloader_thread_exit = 0;
+
   g_ctx.cgw_api_pkg_new.api = "http://127.0.0.1:8018/pkg/new";
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
   g_ctx.cgw_api_pkg_new.nc = NULL;
@@ -358,8 +369,14 @@ static void init_context() {
   g_ctx.cgw_api_tdr_stat.api = "http://127.0.0.1:8018/tdr/stat";
   g_ctx.cgw_api_tdr_stat.fn = cgw_handler_tdr_stat;
   g_ctx.cgw_api_tdr_stat.nc = NULL;
+
+  g_ctx.cmd_buf = g_cmd_buf;
+  g_ctx.cmd_output = g_cmd_output;
+
+  g_ctx.pkg_cdn_url = "ftp://speedtest.tele2.net/1KB.zip";
   
-  g_ctx.downloader = "/data/duc/test_interface/dlc"; 
+  g_ctx.downloader = "curl --output wpc.1.0.0"; 
+//  g_ctx.downloader = "/data/duc/test_interface/dlc"; 
 }
 
 int main(int argc, char *argv[]) {
