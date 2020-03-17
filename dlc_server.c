@@ -46,6 +46,7 @@ struct bs_context {
   struct bs_cgw_api_handler cgw_api_pkg_stat;
   struct bs_cgw_api_handler cgw_api_tdr_run;
   struct bs_cgw_api_handler cgw_api_tdr_stat;
+  char * tftp_server;
   char * downloader;
   char * pkg_cdn_url;
   char * cmd_buf;
@@ -59,12 +60,35 @@ static void core_state_handler(unsigned char);
 //---------------------------------------------------------------------------
 // Communication with DMC
 //--------------------------------------------------------------------------- 
-static int dmc_downloader_stat(struct bs_context * p_ctx) {
-  (void) p_ctx;
+static int dmc_tftp_run(struct bs_context * p_ctx) {
+  // TODO: 1. format message according convention with SocketWrapper
+  // TODO: 2. need root right to listen port 69?
+  char * succ = "{ \"DLC pkg new\": \"Downloader start to run\"}";
+  char * fail = "{ \"DLC pkg new\": \"Donwloader failed to run\"}";
+
+  FILE *fp;
+
+  if ((fp = popen(p_ctx->cmd_buf, "r")) != NULL) {
+    mg_send(p_ctx->dmc, succ, strlen(succ));
+  } else {
+    mg_send(p_ctx->dmc, fail, strlen(fail));
+  }
+
+  //TODO:  handle the cases of tftp failed and monitoring tftp server
+
   return 1;
 }
 
+static int dmc_downloader_stat(struct bs_context * p_ctx) {
+  (void) p_ctx;
+  return g_stat;
+}
+
 static void * dmc_downloader_thread(void * param) {
+  // TODO: format message according convention with SocketWrapper
+  char * succ = "{ \"DLC pkg new\": \"Downloader start to run\"}";
+  char * fail = "{ \"DLC pkg new\": \"Donwloader failed to run\"}";
+
   FILE *fp;
   struct bs_context * p_ctx = (struct bs_context *) param;
 
@@ -74,21 +98,32 @@ static void * dmc_downloader_thread(void * param) {
   strcat(p_ctx->cmd_buf, p_ctx->pkg_cdn_url);    
 
   if ((fp = popen(p_ctx->cmd_buf, "r")) != NULL) {
-    mg_send(p_ctx->dmc, "{ \"DLC status\": \"Going to run\"}", 31);
+    mg_send(p_ctx->dmc, succ, strlen(succ));
   } else {
-    mg_send(p_ctx->dmc, "{ \"DLC status\": \"Failed to run\"}", 32);
+    mg_send(p_ctx->dmc, fail, strlen(fail));
     return NULL;
   }
 
   printf("--> curl started!\n");
   while (!p_ctx->downloader_thread_exit &&
          fgets(p_ctx->cmd_output, 1024, fp) != NULL) {
-    
-    printf("==> %s\n", p_ctx->cmd_output);
+    // block until has lock
+    while (g_stat_lock);
+
+    g_stat_lock = 1;
+    // TODO: need better way to check successful downloading  
+    g_stat_lock = 0;
   }
   printf("--> curl ended!\n");
 
-  pclose(fp);
+  while (g_stat_lock);
+  g_stat_lock = 1;
+  if (pclose(fp) == 0) {
+    g_stat = DLC_PKG_READY;
+    core_state_handler(STAT_INVALID);
+  }
+  g_stat_lock = 0;
+
   return NULL;
 }
 
@@ -105,7 +140,8 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
   switch (ev) {
     case MG_EV_ACCEPT:
       g_ctx.dmc = nc;
-      core_state_handler(STAT_INVALID);//??test
+      dmc_tftp_run(&g_ctx);
+      core_state_handler(DLC_PKG_NEW);//??test
       break;
     case MG_EV_RECV:
       // first 4 bytes for length
@@ -286,44 +322,29 @@ static void * cgw_msg_thread(void *param) {
 
 //---------------------------------------------------------------------------
 // Core state machine
+// Set g_stat_lock=1 before invoking this function
 //--------------------------------------------------------------------------- 
 static void core_state_handler(unsigned char reset) {
 
   // force to reset
   if (reset != STAT_INVALID) { 
     g_stat = reset;
-    return;
   }
-
-  // test
-  g_stat = DLC_PKG_NEW;
 
   switch (g_stat) {
     case STAT_IDLE:
       break;
     case DLC_PKG_NEW:
       // TODO: parse received JSON
-      if (dmc_downloader_run(&g_ctx)) {
-        g_stat = DLC_PKG_DOWNLOADING;
-        mg_send(g_ctx.dmc, "{\"result\":\"IDCM downloading start\n\"}", 48);
-      } else {
-        g_stat = DLC_PKG_BAD;
-        mg_send(g_ctx.dmc, "{\"result\":\"IDCM downloading failed\n\"}", 40);
-      }
+
+      dmc_downloader_run(&g_ctx);
+      g_stat = DLC_PKG_DOWNLOADING;
       break;
     case DLC_PKG_DOWNLOADING:
-      if (dmc_downloader_stat(&g_ctx) < 0) {
-        g_stat = DLC_PKG_BAD;
-        mg_send(g_ctx.dmc, "{\"result\":\"Start downloader failed\n\"}", 40);
-      } else if (dmc_downloader_stat(&g_ctx) > 0) {
-        // TODO: verify checksum of downloaded pkg
-        g_stat = DLC_PKG_READY;
-        mg_send(g_ctx.dmc, "{\"result\":\"IDCM downloading finished\n\"}", 40);
-      } else {
-        mg_send(g_ctx.dmc, "{\"result\":\"Start downloader failed\n\"}", 40);
-      }
+      // TODO: verify checksum of downloaded pkg
       break;
     case DLC_PKG_READY:
+      printf("---> pgk ready\n");
       mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_pkg_new)); 
       break;
     case ORCH_CON_ERR:
@@ -376,7 +397,9 @@ static void init_context() {
   g_ctx.pkg_cdn_url = "ftp://speedtest.tele2.net/1KB.zip";
   
   g_ctx.downloader = "curl --output wpc.1.0.0"; 
-//  g_ctx.downloader = "/data/duc/test_interface/dlc"; 
+//  g_ctx.downloader = "/data/duc/test_interface/dlc";
+
+  g_ctx.tftp_server = "sudo ./tftpserver"; 
 }
 
 int main(int argc, char *argv[]) {

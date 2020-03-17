@@ -399,7 +399,7 @@ int TFTP::on_read(const char *filename)
         fprintf(stderr, "Could not open source file, using stdout.\n");
         return -1;
     } else {
-        printf("Preparing to start writing file '%s'\n", filename);
+        printf("Preparing to start reading file '%s'\n", filename);
         return 1;
     }
 }
