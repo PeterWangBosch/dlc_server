@@ -20,6 +20,36 @@ struct bs_cgw_api_handler {
 };
 
 /**
+ * Upgrading pkg info of single ECU 
+**/
+struct bs_pkg_info {
+  // “yes” or “no”
+  char door_module[8];
+  char dev_id[32];
+  char soft_id[32];
+  char release_notes[256];
+};
+
+/**
+ * Upgrading status of single ECU
+**/
+struct bs_ecu_upgrade_stat {
+  char dev_id[32];
+  char soft_id[32];
+  char esti_time[64];
+  char start_time[32];
+  char time_stamp[32];
+  // "yes" or "no"
+  char door_module[8];
+  // "pending", "in progress", "failed", "success"
+  char status[15];
+  // raw percentage data, e.g., 0, 55, or 100
+  float progress_percent; 
+};
+
+
+
+/**
  * core state machine
 **/
 #define STAT_INVALID  0xFF
@@ -40,12 +70,16 @@ static unsigned char g_stat = 0;
 static unsigned char g_stat_lock = 0;
 struct bs_context {
   struct mg_connection * dmc;
+  struct mg_connection * hmi;
   unsigned char cgw_thread_exit;
   unsigned char downloader_thread_exit;
+  unsigned char hmi_thread_exit;
   struct bs_cgw_api_handler cgw_api_pkg_new;
   struct bs_cgw_api_handler cgw_api_pkg_stat;
   struct bs_cgw_api_handler cgw_api_tdr_run;
   struct bs_cgw_api_handler cgw_api_tdr_stat;
+  struct bs_pkg_info * hmi_pkg_info;
+  struct bs_ecu_upgrade_stat * hmi_upgrade_stat;
   char * tftp_server;
   char * downloader;
   char * pkg_cdn_url;
@@ -56,6 +90,240 @@ struct bs_context {
 };
 struct bs_context g_ctx;
 static void core_state_handler(unsigned char);
+
+//---------------------------------------------------------------------------
+// Communication Protocol :
+// 1. first 4 bytes represent length
+//---------------------------------------------------------------------------
+//TODO:
+static void make_proto_frame(char* buf, char* payload, unsigned int len) {
+  (void) buf;
+  (void) len;
+
+  // first 4 bytes for length
+  buf[3] = (char) (len);
+  buf[2] = (char) (len<< 8); 
+  buf[1] = (char) (len<< 16);
+  buf[0] = (char) (len<< 24);
+  
+  strcpy((char *)(buf+4), payload);
+}
+
+
+//---------------------------------------------------------------------------
+// Communication with HMI
+// 
+//--------------------------------------------------------------------------- 
+static void init_hmi_objs(struct bs_context * p_ctx) {
+
+  // TODO: take values from p_ctx to init these values
+
+  struct bs_pkg_info _hmi_pkg_info;
+  struct bs_ecu_upgrade_stat _hmi_upgrade_stat;
+
+  p_ctx->hmi_pkg_info = &_hmi_pkg_info;
+  p_ctx->hmi_upgrade_stat = &_hmi_upgrade_stat;
+
+  strcpy(_hmi_pkg_info.door_module, "no");
+  strcpy(_hmi_pkg_info.dev_id, "FP_001_FID1");
+  strcpy(_hmi_pkg_info.soft_id, "wpc.1.0.0.0");
+  strcpy(_hmi_pkg_info.release_notes, "");
+
+  strcpy(_hmi_upgrade_stat.dev_id, "FP_001_FID1");
+  strcpy(_hmi_upgrade_stat.soft_id, "wpc.1.0.0.0");
+  strcpy(_hmi_upgrade_stat.esti_time, "2019-12-09T03:59:48.000+0000");
+  strcpy(_hmi_upgrade_stat.start_time, "2019-12-09T03:59:48.000+0000");
+  strcpy(_hmi_upgrade_stat.time_stamp, "2019-12-09T03:59:48.000+0000");
+  // "yes" or "no"
+  strcpy(_hmi_upgrade_stat.door_module, "no");
+  // "pending", "in progress", "failed", "success"
+  strcpy(_hmi_upgrade_stat.status, "in progress");
+  // raw percentage data, e.g., 0, 55, or 100
+  _hmi_upgrade_stat.progress_percent = 0; 
+}
+
+static unsigned int hmi_response_pkg_info(struct bs_context *p_ctx, char *msg) {
+  int i = 0;
+  unsigned int pc = 0; 
+  
+  // first 4 bytes for length
+  pc += 4;
+
+  // door_module
+  for (i = 0; i < 8; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_pkg_info->door_module);
+  pc += 8;
+  // dev_id
+  for (i = 0; i < 32; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_pkg_info->dev_id);
+  pc += 32;
+  // soft_id
+  for (i = 0; i < 32; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_pkg_info->dev_id);
+  pc += 32;
+  // release_notes
+  for (i = 0; i < 256; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_pkg_info->release_notes);
+  pc += 256;
+
+  // the value of pc is the length
+  msg[0] = (char) (pc<< 24);
+  msg[1] = (char) (pc<< 16);
+  msg[2] = (char) (pc<< 8); 
+  msg[3] = (char) (pc);
+
+  // add string end to keep safe
+  msg[++pc] = 0;
+
+  return pc;
+}
+
+static unsigned int hmi_response_upgrade_stat(struct bs_context *p_ctx, char *msg) {
+  int i = 0;
+  unsigned int pc = 0; 
+  
+  // first 4 bytes for length
+  pc += 4;
+
+  // dev_id
+  for (i = 0; i < 32; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->dev_id);
+  pc += 32;
+
+  // soft_id
+  for (i = 0; i < 32; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->soft_id);
+  pc += 32;
+
+  // esti_time
+  for (i = 0; i < 64; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->esti_time);
+  pc += 64;
+
+  // start_time
+  for (i = 0; i < 32; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->start_time);
+  pc += 32;
+
+  // time_stamp
+  for (i = 0; i < 32; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->start_time);
+  pc += 32;
+
+  // door_module
+  for (i = 0; i < 8; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->door_module);
+  pc += 8;
+
+  // status
+  for (i = 0; i < 16; i++) {
+    msg[pc+i] = 0;
+  }
+  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->status);
+  pc += 16;
+
+  int percent = p_ctx->hmi_upgrade_stat->progress_percent; 
+  // first 4 bytes for length
+  msg[0] = (char) (percent<< 24);
+  msg[1] = (char) (percent<< 16);
+  msg[2] = (char) (percent<< 8); 
+  msg[3] = (char) (percent);
+  pc += 4;
+
+  // the value of pc is the length
+  msg[0] = (char) (pc<< 24);
+  msg[1] = (char) (pc<< 16);
+  msg[2] = (char) (pc<< 8); 
+  msg[3] = (char) (pc);
+
+  // add string end to keep safe
+  msg[++pc] = 0;
+
+  return pc;  
+}
+
+static void hmi_msg_handler(struct mg_connection *nc, int ev, void *p) {
+  static char response[512];
+  unsigned int len = 0;
+  struct mbuf *io = &nc->recv_mbuf;
+  (void) p;
+
+  switch (ev) {
+    case MG_EV_ACCEPT:
+      g_ctx.hmi = nc;
+      printf("HMI: socket connected");
+      break;
+    case MG_EV_RECV:
+      // first 4 bytes for length
+      if (strcmp(io->buf+4, "pkg_info") == 0) {
+        // TODO: use the bs_context passed by thread
+        len = hmi_response_pkg_info(&g_ctx, response);
+        mg_send(g_ctx.hmi, response, len);
+      } else if (strcmp(io->buf+4, "upgrade_stat") == 0) {
+        len = hmi_response_upgrade_stat(&g_ctx, response);
+        mg_send(g_ctx.hmi, response, len);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+static void * hmi_thread(void * param) {
+  struct mg_mgr mgr;
+  struct bs_context * p_ctx = (struct bs_context *) param;
+
+  mg_mgr_init(&mgr, NULL);
+
+  printf("==Start socket server for HMI ==\n");
+    // by default, listen to 3001
+    mg_bind(&mgr, "3001", hmi_msg_handler);
+    printf("Listen on port 3001 for HMI\n");
+
+  while (p_ctx->hmi_thread_exit != 0) {
+    if (g_stat_lock) {
+      sleep(0.1);
+      continue;
+    }
+
+    g_stat_lock = 1;
+    if (g_ctx.hmi != NULL) {
+      // TODO: report status
+      ;
+    }
+
+    mg_mgr_poll(&mgr, 100);
+    g_stat_lock = 0;
+  }
+  mg_mgr_free(&mgr);
+
+  return 0;
+}
+
+static int hmi_thread_run(struct bs_context * p_ctx) {
+  mg_start_thread(hmi_thread, (void *) p_ctx);
+  return 1;
+}
 
 //---------------------------------------------------------------------------
 // Communication with DMC
@@ -141,6 +409,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
     case MG_EV_ACCEPT:
       g_ctx.dmc = nc;
       dmc_tftp_run(&g_ctx);
+      hmi_thread_run(&g_ctx);
       core_state_handler(DLC_PKG_NEW);//??test
       break;
     case MG_EV_RECV:
@@ -374,9 +643,13 @@ static void core_state_handler(unsigned char reset) {
 //---------------------------------------------------------------------------
 static void init_context() {
   g_ctx.dmc = NULL;
+  g_ctx.hmi = NULL;
 
   g_ctx.cgw_thread_exit = 0;
+  g_ctx.hmi_thread_exit = 0;
   g_ctx.downloader_thread_exit = 0;
+
+  init_hmi_objs(&g_ctx);
 
   g_ctx.cgw_api_pkg_new.api = "http://127.0.0.1:8018/pkg/new";
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
