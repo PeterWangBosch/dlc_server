@@ -78,6 +78,7 @@ struct bs_context {
   struct bs_cgw_api_handler cgw_api_pkg_stat;
   struct bs_cgw_api_handler cgw_api_tdr_run;
   struct bs_cgw_api_handler cgw_api_tdr_stat;
+  struct bs_cgw_api_handler cgw_api_pkg_upload;
   struct bs_pkg_info * hmi_pkg_info;
   struct bs_ecu_upgrade_stat * hmi_upgrade_stat;
   char * tftp_server;
@@ -387,8 +388,7 @@ static void * dmc_downloader_thread(void * param) {
   while (g_stat_lock);
   g_stat_lock = 1;
   if (pclose(fp) == 0) {
-    g_stat = DLC_PKG_READY;
-    core_state_handler(STAT_INVALID);
+    core_state_handler(DLC_PKG_READY);
   }
   g_stat_lock = 0;
 
@@ -428,6 +428,30 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
 //---------------------------------------------------------------------------
 // Communication with Orchestrator on CGW
 //--------------------------------------------------------------------------- 
+static void * cgw_pkg_upload_thread(void *param) {
+//  char * file_path = (char *) param;
+  static char cmd[128];
+  char * curl = "curl -F 'data=@./wpc.1.0.0' ";
+  int i;
+
+  (void) param;
+ 
+  for(i = 0; i < 128; i++) {
+    cmd[i] = 0;
+  }
+  // TODO: obtain the package name from g_ctx
+  strcpy(cmd, curl);
+  strcat(cmd, g_ctx.cgw_api_pkg_upload.api);
+
+  if (popen(cmd, "r") != NULL) {
+    printf("curl start to upload");
+  } else {
+    printf("curl failed to upload");
+  }
+
+  return NULL;
+}
+
 static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
   (void) hm;
@@ -447,6 +471,7 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       g_stat = ORCH_PKG_DOWNLOADING;
+      mg_start_thread(cgw_pkg_upload_thread, (void *) &(g_ctx.cgw_api_pkg_upload));
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
       g_ctx.cgw_thread_exit = 1;
       break;
@@ -481,7 +506,11 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       //g_stat = ORCH_PKG_DOWNLOADING;
-      g_stat = ORCH_PKG_READY;
+      if (mg_vcmp(&(hm->body), "succ") > 0)
+        g_stat = ORCH_PKG_READY;
+      else
+        g_stat = ORCH_PKG_DOWNLOADING;
+
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
       g_ctx.cgw_thread_exit = 1;
       break;
@@ -568,6 +597,7 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
   }
 }
 
+
 static void * cgw_msg_thread(void *param) {
   struct mg_mgr mgr;
   struct bs_cgw_api_handler * handler = (struct bs_cgw_api_handler *) param;
@@ -619,7 +649,8 @@ static void core_state_handler(unsigned char reset) {
     case ORCH_CON_ERR:
       break;
     case ORCH_PKG_DOWNLOADING:
-      mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_pkg_stat)); 
+      if (g_ctx.cgw_api_pkg_stat.nc == NULL)
+        mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_pkg_stat)); 
       break;
     case ORCH_PKG_BAD:
       break;
@@ -651,6 +682,7 @@ static void init_context() {
 
   init_hmi_objs(&g_ctx);
 
+  // CGW http API
   g_ctx.cgw_api_pkg_new.api = "http://127.0.0.1:8018/pkg/new";
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
   g_ctx.cgw_api_pkg_new.nc = NULL;
@@ -663,6 +695,10 @@ static void init_context() {
   g_ctx.cgw_api_tdr_stat.api = "http://127.0.0.1:8018/tdr/stat";
   g_ctx.cgw_api_tdr_stat.fn = cgw_handler_tdr_stat;
   g_ctx.cgw_api_tdr_stat.nc = NULL;
+  // TODO: so far use curl to upload
+  g_ctx.cgw_api_pkg_upload.api = "http://127.0.0.1:8018/upload";
+  g_ctx.cgw_api_pkg_upload.fn = NULL;
+  g_ctx.cgw_api_pkg_upload.nc = NULL;
 
   g_ctx.cmd_buf = g_cmd_buf;
   g_ctx.cmd_output = g_cmd_output;
