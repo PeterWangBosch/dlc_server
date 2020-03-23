@@ -373,7 +373,7 @@ static void * dmc_downloader_thread(void * param) {
     return NULL;
   }
 
-  printf("--> curl started!\n");
+  printf("--> curl start downling!\n");
   while (!p_ctx->downloader_thread_exit &&
          fgets(p_ctx->cmd_output, 1024, fp) != NULL) {
     // block until has lock
@@ -383,7 +383,7 @@ static void * dmc_downloader_thread(void * param) {
     // TODO: need better way to check successful downloading  
     g_stat_lock = 0;
   }
-  printf("--> curl ended!\n");
+  printf("--> curl finished downloading!\n");
 
   while (g_stat_lock);
   g_stat_lock = 1;
@@ -429,9 +429,10 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
 // Communication with Orchestrator on CGW
 //--------------------------------------------------------------------------- 
 static void * cgw_pkg_upload_thread(void *param) {
-//  char * file_path = (char *) param;
+  struct bs_context *p_ctx = (struct bs_context *) param;
+  FILE *fp;
   static char cmd[128];
-  char * curl = "curl -F 'data=@./wpc.1.0.0' ";
+  char *curl = "curl -F 'data=@./wpc.1.0.0' ";
   int i;
 
   (void) param;
@@ -441,13 +442,25 @@ static void * cgw_pkg_upload_thread(void *param) {
   }
   // TODO: obtain the package name from g_ctx
   strcpy(cmd, curl);
-  strcat(cmd, g_ctx.cgw_api_pkg_upload.api);
+  strcat(cmd, p_ctx->cgw_api_pkg_upload.api);
 
-  if (popen(cmd, "r") != NULL) {
+  if ((fp = popen(cmd, "r")) != NULL) {
     printf("curl start to upload");
   } else {
     printf("curl failed to upload");
   }
+
+  printf("--> curl start to upload!\n");
+  while (!p_ctx->downloader_thread_exit &&
+         fgets(p_ctx->cmd_output, 1024, fp) != NULL) {
+    // block until has lock
+    while (g_stat_lock);
+
+    g_stat_lock = 1;
+    g_stat = ORCH_PKG_READY;//HMI will triger orchestrator to do upgrading  
+    g_stat_lock = 0;
+  }
+  printf("--> curl uploading finished!\n");
 
   return NULL;
 }
@@ -471,7 +484,7 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       g_stat = ORCH_PKG_DOWNLOADING;
-      mg_start_thread(cgw_pkg_upload_thread, (void *) &(g_ctx.cgw_api_pkg_upload));
+      mg_start_thread(cgw_pkg_upload_thread, (void *) &g_ctx);
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
       g_ctx.cgw_thread_exit = 1;
       break;
@@ -489,7 +502,6 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
 
 static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
-  (void) hm;
 
   switch (ev) {
     case MG_EV_CONNECT:
@@ -504,12 +516,16 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
       }
       break;
     case MG_EV_HTTP_REPLY:
+      fwrite(hm->body.p, 1, hm->body.len, stdout);
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       //g_stat = ORCH_PKG_DOWNLOADING;
-      if (mg_vcmp(&(hm->body), "succ") > 0)
+      if (strstr(hm->body.p, "succ") != NULL) {
         g_stat = ORCH_PKG_READY;
-      else
+        printf("Orchestrator pkg status: pkg ready\n");
+      } else {
         g_stat = ORCH_PKG_DOWNLOADING;
+        printf("Orchestrator pkg status: pkg downloading\n");
+      }
 
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
       g_ctx.cgw_thread_exit = 1;
