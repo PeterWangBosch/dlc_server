@@ -4,6 +4,7 @@
  */
 
 #include "stdio.h"
+#include "cJSON/cJSON.h"
 #include "mongoose/mongoose.h"
 
 /* reserved buffer to save memory */
@@ -18,6 +19,16 @@ struct bs_cgw_api_handler {
   mg_event_handler_t fn;
   struct mg_connection * nc;
 };
+
+//-----------------------------------------------------------------
+// HMI Message  
+//-----------------------------------------------------------------
+#define CHECK_NEW_PACKAGE   1
+#define START_UPGRADE       2
+#define UPGRADE_PROGRESS    3
+
+#define REQUEST         "1"
+#define RESPONSE        "2"
 
 /**
  * Upgrading pkg info of single ECU 
@@ -46,8 +57,6 @@ struct bs_ecu_upgrade_stat {
   // raw percentage data, e.g., 0, 55, or 100
   float progress_percent; 
 };
-
-
 
 /**
  * core state machine
@@ -93,25 +102,6 @@ struct bs_context g_ctx;
 static void core_state_handler(unsigned char);
 
 //---------------------------------------------------------------------------
-// Communication Protocol :
-// 1. first 4 bytes represent length
-//---------------------------------------------------------------------------
-//TODO:
-static void make_proto_frame(char* buf, char* payload, unsigned int len) {
-  (void) buf;
-  (void) len;
-
-  // first 4 bytes for length
-  buf[3] = (char) (len);
-  buf[2] = (char) (len<< 8); 
-  buf[1] = (char) (len<< 16);
-  buf[0] = (char) (len<< 24);
-  
-  strcpy((char *)(buf+4), payload);
-}
-
-
-//---------------------------------------------------------------------------
 // Communication with HMI
 // 
 //--------------------------------------------------------------------------- 
@@ -119,8 +109,9 @@ static void init_hmi_objs(struct bs_context * p_ctx) {
 
   // TODO: take values from p_ctx to init these values
 
-  struct bs_pkg_info _hmi_pkg_info;
-  struct bs_ecu_upgrade_stat _hmi_upgrade_stat;
+  // To make private
+  static struct bs_pkg_info _hmi_pkg_info;
+  static struct bs_ecu_upgrade_stat _hmi_upgrade_stat;
 
   p_ctx->hmi_pkg_info = &_hmi_pkg_info;
   p_ctx->hmi_upgrade_stat = &_hmi_upgrade_stat;
@@ -128,13 +119,13 @@ static void init_hmi_objs(struct bs_context * p_ctx) {
   strcpy(_hmi_pkg_info.door_module, "no");
   strcpy(_hmi_pkg_info.dev_id, "FP_001_FID1");
   strcpy(_hmi_pkg_info.soft_id, "wpc.1.0.0.0");
-  strcpy(_hmi_pkg_info.release_notes, "");
+  strcpy(_hmi_pkg_info.release_notes, "N/A");
 
   strcpy(_hmi_upgrade_stat.dev_id, "FP_001_FID1");
   strcpy(_hmi_upgrade_stat.soft_id, "wpc.1.0.0.0");
-  strcpy(_hmi_upgrade_stat.esti_time, "2019-12-09T03:59:48.000+0000");
-  strcpy(_hmi_upgrade_stat.start_time, "2019-12-09T03:59:48.000+0000");
-  strcpy(_hmi_upgrade_stat.time_stamp, "2019-12-09T03:59:48.000+0000");
+  strcpy(_hmi_upgrade_stat.esti_time, "00:00:00 01-01-1900");
+  strcpy(_hmi_upgrade_stat.start_time, "00:00:00 01-01-1900");
+  strcpy(_hmi_upgrade_stat.time_stamp, "00:00:00 01-01-1900");
   // "yes" or "no"
   strcpy(_hmi_upgrade_stat.door_module, "no");
   // "pending", "in progress", "failed", "success"
@@ -143,37 +134,52 @@ static void init_hmi_objs(struct bs_context * p_ctx) {
   _hmi_upgrade_stat.progress_percent = 0; 
 }
 
-static unsigned int hmi_response_pkg_info(struct bs_context *p_ctx, char *msg) {
-  int i = 0;
-  unsigned int pc = 0; 
-  
+static unsigned int hmi_resp_check_new_pkg(struct bs_context *p_ctx, char *msg) {
+  unsigned int pc = 0;
+  char buf[512];
+  static char *resp_header = "\"func-id\":1,\"category\":2,\"response\":{";
   // first 4 bytes for length
   pc += 4;
 
+  // start {
+  msg[pc] = '{';
+  pc += 1;
+
+  // header
+  strcpy(msg + pc, resp_header);
+  pc += strlen(resp_header);
+
   // door_module
-  for (i = 0; i < 8; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_pkg_info->door_module);
-  pc += 8;
+  sprintf(buf, "\"door_module\":\"%s\",", p_ctx->hmi_pkg_info->door_module);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
   // dev_id
-  for (i = 0; i < 32; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_pkg_info->dev_id);
-  pc += 32;
+  sprintf(buf, "\"dev_id\":\"%s\",", p_ctx->hmi_pkg_info->dev_id);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
   // soft_id
-  for (i = 0; i < 32; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_pkg_info->dev_id);
-  pc += 32;
+  sprintf(buf, "\"soft_id\":\"%s\",", p_ctx->hmi_pkg_info->soft_id);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
   // release_notes
-  for (i = 0; i < 256; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_pkg_info->release_notes);
-  pc += 256;
+  sprintf(buf, "\"release_notes\":\"%s\",", p_ctx->hmi_pkg_info->release_notes);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
+  // end '}' for pkg info
+  msg[pc] = '}';
+  pc += 1;
+
+  // end '}'
+  msg[pc] = '}';
+  pc += 1;
+
+
+  // add string end to keep safe
+  msg[++pc] = 0;
 
   // the value of pc is the length
   msg[0] = (char) (pc<< 24);
@@ -181,75 +187,126 @@ static unsigned int hmi_response_pkg_info(struct bs_context *p_ctx, char *msg) {
   msg[2] = (char) (pc<< 8); 
   msg[3] = (char) (pc);
 
-  // add string end to keep safe
-  msg[++pc] = 0;
+  // debug
+  printf("res:-----> %s\n", msg+4);
 
   return pc;
 }
 
-static unsigned int hmi_response_upgrade_stat(struct bs_context *p_ctx, char *msg) {
-  int i = 0;
-  unsigned int pc = 0; 
-  
+static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg) {
+  unsigned int pc = 0;
+  char buf[128];
+  static char *resp_header = "\"func-id\":2,\"category\":2,\"response\":{";
   // first 4 bytes for length
   pc += 4;
+
+  // start {
+  msg[pc] = '{';
+  pc += 1;
+
+  // header
+  strcpy(msg + pc, resp_header);
+  pc += strlen(resp_header);
 
   // dev_id
-  for (i = 0; i < 32; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->dev_id);
-  pc += 32;
+  sprintf(buf, "\"dev_id\":\"%s\",", p_ctx->hmi_pkg_info->dev_id);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
 
   // soft_id
-  for (i = 0; i < 32; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->soft_id);
-  pc += 32;
+  sprintf(buf, "\"soft_id\":\"%s\",", p_ctx->hmi_pkg_info->soft_id);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
+  // end '}' for pkg info
+  msg[pc] = '}';
+  pc += 1;
+
+  // end '}'
+  msg[pc] = '}';
+  pc += 1;
+
+  // add string end to keep safe
+  msg[++pc] = 0;
+
+  // the value of pc is the length
+  msg[0] = (char) (pc<< 24);
+  msg[1] = (char) (pc<< 16);
+  msg[2] = (char) (pc<< 8);
+  msg[3] = (char) (pc);
+
+  // debug
+  printf("res:-----> %s\n", msg+4);
+
+  return pc;
+}
+
+static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg) {
+  unsigned int pc = 0; 
+  static char *resp_header = "\"func-id\":3,\"category\":2,\"response\":{";
+  char buf[128];
+ 
+  // first 4 bytes for length
+  pc += 4;
+
+  // start {
+  msg[pc] = '{';
+  pc += 1;
+
+  // header
+  strcpy(msg + pc, resp_header);
+  pc += strlen(resp_header);
+
+  // dev_id
+  sprintf(buf, "\"dev_id\":\"%s\",", p_ctx->hmi_upgrade_stat->dev_id);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
+  // soft_id
+  sprintf(buf, "\"soft_id\":\"%s\",", p_ctx->hmi_upgrade_stat->soft_id);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
 
   // esti_time
-  for (i = 0; i < 64; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->esti_time);
-  pc += 64;
+  sprintf(buf, "\"esti_time\":\"%s\",", p_ctx->hmi_upgrade_stat->esti_time);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
 
   // start_time
-  for (i = 0; i < 32; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->start_time);
-  pc += 32;
+  sprintf(buf, "\"start_time\":\"%s\",", p_ctx->hmi_upgrade_stat->start_time);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
 
   // time_stamp
-  for (i = 0; i < 32; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->start_time);
-  pc += 32;
+  sprintf(buf, "\"time_stamp\":\"%s\",", p_ctx->hmi_upgrade_stat->time_stamp);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
 
   // door_module
-  for (i = 0; i < 8; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->door_module);
-  pc += 8;
+  sprintf(buf, "\"door_module\":\"%s\",", p_ctx->hmi_upgrade_stat->door_module);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
 
   // status
-  for (i = 0; i < 16; i++) {
-    msg[pc+i] = 0;
-  }
-  strcpy(msg + pc, p_ctx->hmi_upgrade_stat->status);
-  pc += 16;
+  sprintf(buf, "\"status\":\"%s\",", p_ctx->hmi_upgrade_stat->status);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
 
-  int percent = p_ctx->hmi_upgrade_stat->progress_percent; 
-  // first 4 bytes for length
-  msg[0] = (char) (percent<< 24);
-  msg[1] = (char) (percent<< 16);
-  msg[2] = (char) (percent<< 8); 
-  msg[3] = (char) (percent);
-  pc += 4;
+  // progress
+  sprintf(buf, "\"progress_percent\":%d", (int)(p_ctx->hmi_upgrade_stat->progress_percent));
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
+  // end '}' for pkg info
+  msg[pc] = '}';
+  pc += 1;
+
+  // end '}'
+  msg[pc] = '}';
+  pc += 1;
+
+  // add string end to keep safe
+  msg[++pc] = 0;
 
   // the value of pc is the length
   msg[0] = (char) (pc<< 24);
@@ -257,14 +314,64 @@ static unsigned int hmi_response_upgrade_stat(struct bs_context *p_ctx, char *ms
   msg[2] = (char) (pc<< 8); 
   msg[3] = (char) (pc);
 
-  // add string end to keep safe
-  msg[++pc] = 0;
+  // debug
+  printf("res:-----> %s\n", msg+4);
 
   return pc;  
 }
 
+// parse JSON format payload
+static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned int len) { 
+  int result = 1;
+  int resp_len = 0;
+  static char response[1024];
+  struct cJSON * root = NULL;
+  struct cJSON * func_id = NULL;
+  int func_id_code = 0;
+
+  (void) len;
+
+  root = cJSON_Parse(payload);
+
+  if (root == NULL)
+      return 0;
+
+  // TODO: validate whole JSON 
+  func_id = root->child;
+  if (!cJSON_IsNumber(func_id)) {
+    goto last_step;
+  }
+ 
+  func_id_code = func_id->valueint;
+
+  // TODO: synthesize response acoording to coming in value
+  switch(func_id_code) {
+    case START_UPGRADE:
+      resp_len = hmi_resp_start_upgrade(p_ctx, response);
+      mg_send(p_ctx->hmi, response, resp_len);
+      break;
+    case UPGRADE_PROGRESS:
+      resp_len = hmi_resp_upgrade_stat(p_ctx, response);
+      mg_send(p_ctx->hmi, response, resp_len);
+      break;
+    case CHECK_NEW_PACKAGE:
+      resp_len = hmi_resp_check_new_pkg(p_ctx, response);
+      mg_send(p_ctx->hmi, response, resp_len);
+      break;
+    default:
+      // unknown item
+      result = 0;
+      goto last_step;
+      break;
+  }
+
+last_step:
+  // release memory
+  cJSON_Delete(root);
+  return result; 
+}
+
 static void hmi_msg_handler(struct mg_connection *nc, int ev, void *p) {
-  static char response[512];
   unsigned int len = 0;
   struct mbuf *io = &nc->recv_mbuf;
   (void) p;
@@ -272,18 +379,12 @@ static void hmi_msg_handler(struct mg_connection *nc, int ev, void *p) {
   switch (ev) {
     case MG_EV_ACCEPT:
       g_ctx.hmi = nc;
-      printf("HMI: socket connected");
+      printf("HMI: socket connected\n");
       break;
     case MG_EV_RECV:
       // first 4 bytes for length
-      if (strcmp(io->buf+4, "pkg_info") == 0) {
-        // TODO: use the bs_context passed by thread
-        len = hmi_response_pkg_info(&g_ctx, response);
-        mg_send(g_ctx.hmi, response, len);
-      } else if (strcmp(io->buf+4, "upgrade_stat") == 0) {
-        len = hmi_response_upgrade_stat(&g_ctx, response);
-        mg_send(g_ctx.hmi, response, len);
-      }
+      len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);
+      hmi_payload_parser(&g_ctx, io->buf+4, len);
       break;
     default:
       break;
@@ -301,20 +402,22 @@ static void * hmi_thread(void * param) {
     mg_bind(&mgr, "3001", hmi_msg_handler);
     printf("Listen on port 3001 for HMI\n");
 
-  while (p_ctx->hmi_thread_exit != 0) {
-    if (g_stat_lock) {
-      sleep(0.1);
-      continue;
-    }
+  while (!p_ctx->hmi_thread_exit) {
+//    if (g_stat_lock) {
+//      sleep(0.1);
+//      continue;
+//    }
 
-    g_stat_lock = 1;
+//    g_stat_lock = 1;
     if (g_ctx.hmi != NULL) {
-      // TODO: report status
+      if (g_stat >= ORCH_PKG_READY) {
+      // TODO: report status if downloading stated
       ;
+      }
     }
 
-    mg_mgr_poll(&mgr, 100);
-    g_stat_lock = 0;
+    mg_mgr_poll(&mgr, 1000);
+//    g_stat_lock = 0;
   }
   mg_mgr_free(&mgr);
 
@@ -613,7 +716,6 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
   }
 }
 
-
 static void * cgw_msg_thread(void *param) {
   struct mg_mgr mgr;
   struct bs_cgw_api_handler * handler = (struct bs_cgw_api_handler *) param;
@@ -724,6 +826,7 @@ static void init_context() {
   g_ctx.downloader = "curl --output wpc.1.0.0"; 
 //  g_ctx.downloader = "/data/duc/test_interface/dlc";
 
+  // Change to FTPS
   g_ctx.tftp_server = "sudo ./tftpserver"; 
 }
 
