@@ -153,7 +153,7 @@ static void init_hmi_objs(struct bs_context * p_ctx) {
   _hmi_upgrade_stat.progress_percent = 0; 
 }
 
-static unsigned int hmi_resp_check_new_pkg(struct bs_context *p_ctx, char *msg) {
+static unsigned int hmi_resp_check_new_pkg(struct bs_context *p_ctx, char *msg, const char *uuid) {
   unsigned int pc = 0;
   char buf[512];
   static char *resp_header = "\"func-id\":1,\"category\":2,\"response\":{";
@@ -192,10 +192,17 @@ static unsigned int hmi_resp_check_new_pkg(struct bs_context *p_ctx, char *msg) 
   msg[pc] = '}';
   pc += 1;
 
+  msg[pc] = ',';
+  pc += 1;
+
+  // uuid
+  sprintf(buf, "\"uuid\":\"%s\"", uuid);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
   // end '}'
   msg[pc] = '}';
   pc += 1;
-
 
   // add string end to keep safe
   msg[++pc] = 0;
@@ -212,7 +219,7 @@ static unsigned int hmi_resp_check_new_pkg(struct bs_context *p_ctx, char *msg) 
   return pc;
 }
 
-static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg) {
+static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg, const char *uuid) {
   unsigned int pc = 0;
   char buf[128];
   static char *resp_header = "\"func-id\":2,\"category\":2,\"response\":{";
@@ -241,6 +248,14 @@ static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg) 
   msg[pc] = '}';
   pc += 1;
 
+  msg[pc] = ',';
+  pc += 1;
+
+  // uuid
+  sprintf(buf, "\"uuid\":\"%s\"", uuid);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
   // end '}'
   msg[pc] = '}';
   pc += 1;
@@ -260,7 +275,7 @@ static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg) 
   return pc;
 }
 
-static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg) {
+static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg, const char* uuid) {
   unsigned int pc = 0; 
   static char *resp_header = "\"func-id\":3,\"category\":2,\"response\":{";
   char buf[128];
@@ -316,9 +331,20 @@ static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg) {
   strcpy(msg + pc, buf);
   pc += strlen(buf);
 
-  // end '}' for pkg info
+  // end '}' for pkg status
   msg[pc] = '}';
   pc += 1;
+
+  // end ']' for pkg status
+  msg[pc] = ']';
+  pc += 1;
+  msg[pc] = ',';
+  pc += 1;
+
+  // uuid
+  sprintf(buf, "\"uuid\":\"%s\"", uuid);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
 
   // end '}'
   msg[pc] = '}';
@@ -345,8 +371,9 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
   int resp_len = 0;
   static char response[1024];
   struct cJSON * root = NULL;
-  struct cJSON * func_id = NULL;
+  struct cJSON * iterator = NULL;
   int func_id_code = 0;
+  static char uuid[64];
 
   (void) len;
 
@@ -355,18 +382,25 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
   if (root == NULL)
       return 0;
 
-  // TODO: validate whole JSON 
-  func_id = root->child;
-  if (!cJSON_IsNumber(func_id)) {
-    goto last_step;
-  }
- 
-  func_id_code = func_id->valueint;
+  // TODO: validate whole JSON
+  iterator = root->child;
+  while(iterator) {
+    if (strcmp(iterator->string, "func_id") == 0) { 
+      if (!cJSON_IsNumber(iterator))
+        goto last_step;
+      func_id_code = iterator->valueint;
+    }
 
+    if (strcmp(iterator->string, "uuid") == 0) { 
+      strcpy(uuid, iterator->valuestring);
+    }
+
+    iterator = iterator->next;
+  }
   // TODO: synthesize response acoording to coming in value
   switch(func_id_code) {
     case START_UPGRADE:
-      resp_len = hmi_resp_start_upgrade(p_ctx, response);
+      resp_len = hmi_resp_start_upgrade(p_ctx, response, uuid);
       if (g_stat == ORCH_PKG_READY) {
         wait_stat_unlocked(10000);
         lock();
@@ -378,11 +412,11 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
       // TODO: handle if g_stat id not ORCH_PKG_READY 
       break;
     case UPGRADE_PROGRESS:
-      resp_len = hmi_resp_upgrade_stat(p_ctx, response);
+      resp_len = hmi_resp_upgrade_stat(p_ctx, response, "7950f8e2-6cd4-11ea-a9a9-571f576d565b"); // TODO: generate uuid
       mg_send(p_ctx->hmi, response, resp_len);
       break;
     case CHECK_NEW_PACKAGE:
-      resp_len = hmi_resp_check_new_pkg(p_ctx, response);
+      resp_len = hmi_resp_check_new_pkg(p_ctx, response, uuid);
       mg_send(p_ctx->hmi, response, resp_len);
       break;
     default:
@@ -449,7 +483,7 @@ static int dmc_tftp_run(struct bs_context * p_ctx) {
   // TODO: 1. format message according convention with SocketWrapper
   // TODO: 2. need root right to listen port 69?
   char * succ = "{ \"DLC pkg new\": \"Downloader start to run\"}";
-  char * fail = "{ \"DLC pkg new\": \"Donwloader failed to run\"}";
+  char * fail = "{ \"DLC pkg new\": \"Downloader failed to run\"}";
 
   FILE *fp;
 
@@ -526,7 +560,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
       g_ctx.dmc = nc;
       dmc_tftp_run(&g_ctx);
       hmi_thread_run(&g_ctx);
-      core_state_handler(DLC_PKG_NEW);//??test
+      core_state_handler(DLC_PKG_NEW);//TODO: it's only for test, drop it
       break;
     case MG_EV_RECV:
       // first 4 bytes for length
@@ -811,7 +845,7 @@ static void core_state_handler(unsigned char reset) {
     case ORCH_TDR_FAIL:
       break;
     case ORCH_TDR_SUCC:
-      mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful}\"}\n", 31);
+      mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\"}\n", 31);
       break;
     default:
       break;
