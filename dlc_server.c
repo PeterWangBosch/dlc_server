@@ -15,6 +15,7 @@ static char g_cmd_output[1024];
  * CGW API Handler
 **/
 struct bs_cgw_api_handler {
+  bool cgw_thread_exit;
   char * api;
   mg_event_handler_t fn;
   struct mg_connection * nc;
@@ -80,7 +81,6 @@ static unsigned char g_stat_lock = 0;
 struct bs_context {
   struct mg_connection * dmc;
   struct mg_connection * hmi;
-  unsigned char cgw_thread_exit;
   unsigned char downloader_thread_exit;
   unsigned char hmi_thread_exit;
   struct bs_cgw_api_handler cgw_api_pkg_new;
@@ -101,6 +101,25 @@ struct bs_context {
 struct bs_context g_ctx;
 static void core_state_handler(unsigned char);
 
+// Block thread until g_stat unlocked or time out.
+static int wait_stat_unlocked(unsigned int timeout) {
+  // TODO: lock for context
+  unsigned int t = 0;
+  while (g_stat_lock && t < timeout) {
+    sleep(0.1);
+    t += 100;
+  }
+
+  return !g_stat_lock;
+}
+
+static void lock() {
+  g_stat_lock = 1;
+}
+
+static void unlock() {
+  g_stat_lock = 0;
+}
 //---------------------------------------------------------------------------
 // Communication with HMI
 // 
@@ -165,7 +184,7 @@ static unsigned int hmi_resp_check_new_pkg(struct bs_context *p_ctx, char *msg) 
   pc += strlen(buf);
 
   // release_notes
-  sprintf(buf, "\"release_notes\":\"%s\",", p_ctx->hmi_pkg_info->release_notes);
+  sprintf(buf, "\"release_notes\":\"%s\"", p_ctx->hmi_pkg_info->release_notes);
   strcpy(msg + pc, buf);
   pc += strlen(buf);
 
@@ -214,7 +233,7 @@ static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg) 
   pc += strlen(buf);
 
   // soft_id
-  sprintf(buf, "\"soft_id\":\"%s\",", p_ctx->hmi_pkg_info->soft_id);
+  sprintf(buf, "\"soft_id\":\"%s\"", p_ctx->hmi_pkg_info->soft_id);
   strcpy(msg + pc, buf);
   pc += strlen(buf);
 
@@ -348,7 +367,15 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
   switch(func_id_code) {
     case START_UPGRADE:
       resp_len = hmi_resp_start_upgrade(p_ctx, response);
-      mg_send(p_ctx->hmi, response, resp_len);
+      if (g_stat == ORCH_PKG_READY) {
+        wait_stat_unlocked(10000);
+        lock();
+        core_state_handler(ORCH_PKG_READY);
+        unlock();
+        mg_send(p_ctx->hmi, response, resp_len);
+      }
+
+      // TODO: handle if g_stat id not ORCH_PKG_READY 
       break;
     case UPGRADE_PROGRESS:
       resp_len = hmi_resp_upgrade_stat(p_ctx, response);
@@ -403,21 +430,7 @@ static void * hmi_thread(void * param) {
     printf("Listen on port 3001 for HMI\n");
 
   while (!p_ctx->hmi_thread_exit) {
-//    if (g_stat_lock) {
-//      sleep(0.1);
-//      continue;
-//    }
-
-//    g_stat_lock = 1;
-    if (g_ctx.hmi != NULL) {
-      if (g_stat >= ORCH_PKG_READY) {
-      // TODO: report status if downloading stated
-      ;
-      }
-    }
-
     mg_mgr_poll(&mgr, 1000);
-//    g_stat_lock = 0;
   }
   mg_mgr_free(&mgr);
 
@@ -548,22 +561,20 @@ static void * cgw_pkg_upload_thread(void *param) {
   strcat(cmd, p_ctx->cgw_api_pkg_upload.api);
 
   if ((fp = popen(cmd, "r")) != NULL) {
-    printf("curl start to upload");
+    printf("-->curl start to upload.\n");
   } else {
-    printf("curl failed to upload");
+    printf("-->curl failed to upload.\n");
   }
 
-  printf("--> curl start to upload!\n");
+  //TODO: check output
   while (!p_ctx->downloader_thread_exit &&
          fgets(p_ctx->cmd_output, 1024, fp) != NULL) {
-    // block until has lock
-    while (g_stat_lock);
-
-    g_stat_lock = 1;
-    g_stat = ORCH_PKG_READY;//HMI will triger orchestrator to do upgrading  
-    g_stat_lock = 0;
   }
-  printf("--> curl uploading finished!\n");
+
+  lock();
+  g_stat = ORCH_PKG_READY;//HMI will triger orchestrator to do upgrading
+  unlock();  
+  printf("Orchestrator pkg ready: uploading finished!\n");
 
   return NULL;
 }
@@ -574,28 +585,22 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
 
   switch (ev) {
     case MG_EV_CONNECT:
-      if (*(int *) ev_data != 0) {
-        printf("Orchestrator pkg new: connect failed\n");
-        g_stat = ORCH_CON_ERR;
-        g_ctx.cgw_thread_exit = 1;
-      } else {
-        g_ctx.cgw_api_pkg_new.nc = nc;
-        g_stat = ORCH_PKG_DOWNLOADING;
-        printf("Orchestrator pkg new: connected to send msg\n");
-      }
+      g_ctx.cgw_api_pkg_new.nc = nc;
+      g_stat = ORCH_PKG_DOWNLOADING;
+      printf("Orchestrator pkg new: connected to send msg\n");
       break;
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       g_stat = ORCH_PKG_DOWNLOADING;
       mg_start_thread(cgw_pkg_upload_thread, (void *) &g_ctx);
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-      g_ctx.cgw_thread_exit = 1;
+      g_ctx.cgw_api_pkg_new.cgw_thread_exit = 1;
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_pkg_new.nc = NULL;
-      if (g_ctx.cgw_thread_exit == 0) {
+      if (g_ctx.cgw_api_pkg_new.cgw_thread_exit == 0) {
         printf("Orchestrator pkg new: connection closed\n");
-        g_ctx.cgw_thread_exit = 1;
+        g_ctx.cgw_api_pkg_new.cgw_thread_exit = 1;
       }
       break;
     default:
@@ -611,7 +616,7 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
       if (*(int *) ev_data != 0) {
         printf("Orchestrator pkg status: connect failed\n");
         g_stat = ORCH_PKG_BAD;
-        g_ctx.cgw_thread_exit = 1;
+        g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 1;
       } else {
         g_ctx.cgw_api_pkg_stat.nc = nc;
         g_stat = ORCH_PKG_DOWNLOADING;
@@ -625,19 +630,19 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
       if (strstr(hm->body.p, "succ") != NULL) {
         g_stat = ORCH_PKG_READY;
         printf("Orchestrator pkg status: pkg ready\n");
+        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+        g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 1;
       } else {
         g_stat = ORCH_PKG_DOWNLOADING;
         printf("Orchestrator pkg status: pkg downloading\n");
       }
 
-      nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-      g_ctx.cgw_thread_exit = 1;
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_pkg_stat.nc = NULL;
-      if (g_ctx.cgw_thread_exit == 0) {
+      if (g_ctx.cgw_api_pkg_stat.cgw_thread_exit == 0) {
         printf("Orchestrator pkg status: closed connection\n");
-        g_ctx.cgw_thread_exit = 1;
+        g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 1;
       }
       break;
     default:
@@ -647,32 +652,42 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
 
 static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
-  (void) hm;
+  struct cJSON * res = NULL;
+  char * info = NULL;
+
+  (void) info;
 
   switch (ev) {
     case MG_EV_CONNECT:
-      if (*(int *) ev_data != 0) {
-        printf("Orchestrator tdr run: connect failed\n");
-        g_stat = ORCH_CON_ERR;
-        g_ctx.cgw_thread_exit = 1;
-      } else {
-        g_ctx.cgw_api_tdr_run.nc = nc;
-        g_stat = ORCH_TDR_RUN;
-        printf("Orchestrator tdr run: connected to send msg\n");
-      }
+      g_ctx.cgw_api_tdr_run.nc = nc;
+      core_state_handler(ORCH_TDR_RUN);
+      printf("Orchestrator tdr run: connected to send msg\n");
       break;
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       // g_stat = ORCH_TDR_FAIL;
-      g_stat = ORCH_TDR_RUN;
-      nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-      g_ctx.cgw_thread_exit = 1;
+      res = cJSON_Parse(hm->body.p);
+      info = cJSON_GetStringValue(res->child);
+
+      //if (strstr(info, "succ") != NULL) {
+      //  core_state_handler(ORCH_TDR_SUCC);
+      //  nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+      //  g_ctx.cgw_api_tdr_run.cgw_thread_exit = 1;
+      //} else if (strstr(info, "fail") != NULL) {
+      //  g_stat = ORCH_TDR_FAIL;
+      //  nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+      //  g_ctx.cgw_api_tdr_run.cgw_thread_exit = 1;
+      //} else {
+        //TODO: report update progress  
+      //  g_stat = ORCH_TDR_RUN;
+      //}
+
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_tdr_run.nc = NULL;
-      if (g_ctx.cgw_thread_exit == 0) {
+      if (g_ctx.cgw_api_tdr_run.cgw_thread_exit == 0) {
         printf("Orchestrator tdr run: closed connection\n");
-        g_ctx.cgw_thread_exit = 1;
+        g_ctx.cgw_api_tdr_run.cgw_thread_exit = 1;
       }
       break;
     default:
@@ -682,7 +697,8 @@ static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data)
 
 static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
-  (void)hm;
+  struct cJSON * res = NULL;
+  char * info = NULL;
 
   switch (ev) {
     case MG_EV_CONNECT:
@@ -690,7 +706,7 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
       if (*(int *) ev_data != 0) {
         printf("Orchestrator tdr status: connect failed\n");
         g_stat = ORCH_CON_ERR;
-        g_ctx.cgw_thread_exit = 1;
+        g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
       } else {
         g_ctx.cgw_api_tdr_stat.nc = nc;
         g_stat = ORCH_TDR_RUN;
@@ -699,16 +715,28 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
       break;
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_TDR_FAIL;
-      // g_stat = ORCH_TDR_SUCC;
-      g_stat = ORCH_TDR_RUN;
-      nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-      g_ctx.cgw_thread_exit = 1;
+      res = cJSON_Parse(hm->body.p);
+      info = cJSON_GetStringValue(res->child);
+
+      if (strstr(info, "succ") != NULL) {
+        core_state_handler(ORCH_TDR_SUCC);
+        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+        g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
+      } else if (strstr(info, "fail") != NULL) {
+        g_stat = ORCH_TDR_FAIL;
+        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+        g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
+      } else {
+        //TODO: report update progress  
+        g_stat = ORCH_TDR_RUN;
+      }
+
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_tdr_stat.nc = NULL;
-      if (g_ctx.cgw_thread_exit == 0) {
+      if (g_ctx.cgw_api_tdr_stat.cgw_thread_exit == 0) {
         printf("Orchestrator tdr status: closed connection\n");
-        g_ctx.cgw_thread_exit = 1;
+        g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
       }
       break;
     default:
@@ -723,9 +751,10 @@ static void * cgw_msg_thread(void *param) {
   mg_mgr_init(&mgr, NULL);
   mg_connect_http(&mgr, handler->fn, handler->api, NULL, NULL);
 
-  while (g_ctx.cgw_thread_exit == 0) {
-    if (g_stat_lock)
-      continue;
+  while (handler->cgw_thread_exit == 0) {
+    if (!wait_stat_unlocked(10000)) {
+      printf("CGW Msg thread: lock timeout\n");
+    }
 
     // run until one api request end
     g_stat_lock = 1;
@@ -733,6 +762,7 @@ static void * cgw_msg_thread(void *param) {
     g_stat_lock = 0;
   }
 
+  handler->cgw_thread_exit = 0;
   mg_mgr_free(&mgr);
   return NULL;
 }
@@ -781,7 +811,7 @@ static void core_state_handler(unsigned char reset) {
     case ORCH_TDR_FAIL:
       break;
     case ORCH_TDR_SUCC:
-      mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\n\"}", 31);
+      mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful}\"}\n", 31);
       break;
     default:
       break;
@@ -794,7 +824,6 @@ static void init_context() {
   g_ctx.dmc = NULL;
   g_ctx.hmi = NULL;
 
-  g_ctx.cgw_thread_exit = 0;
   g_ctx.hmi_thread_exit = 0;
   g_ctx.downloader_thread_exit = 0;
 
@@ -802,15 +831,19 @@ static void init_context() {
 
   // CGW http API
   g_ctx.cgw_api_pkg_new.api = "http://127.0.0.1:8018/pkg/new";
+  g_ctx.cgw_api_pkg_new.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
   g_ctx.cgw_api_pkg_new.nc = NULL;
   g_ctx.cgw_api_pkg_stat.api = "http://127.0.0.1:8018/pkg/sta";
+  g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_stat.fn = cgw_handler_pkg_stat;
   g_ctx.cgw_api_pkg_stat.nc = NULL;
   g_ctx.cgw_api_tdr_run.api = "http://127.0.0.1:8018/tdr/run";
+  g_ctx.cgw_api_tdr_run.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_run.fn = cgw_handler_tdr_run;
   g_ctx.cgw_api_tdr_run.nc = NULL;
   g_ctx.cgw_api_tdr_stat.api = "http://127.0.0.1:8018/tdr/stat";
+  g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_stat.fn = cgw_handler_tdr_stat;
   g_ctx.cgw_api_tdr_stat.nc = NULL;
   // TODO: so far use curl to upload
