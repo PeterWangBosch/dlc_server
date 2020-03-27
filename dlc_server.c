@@ -214,7 +214,7 @@ static unsigned int hmi_resp_check_new_pkg(struct bs_context *p_ctx, char *msg, 
   msg[3] = (char) (pc);
 
   // debug
-  printf("res:-----> %s\n", msg+4);
+  printf("HMI Msg: send %s\n", msg+4);
 
   return pc;
 }
@@ -270,7 +270,7 @@ static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg, 
   msg[3] = (char) (pc);
 
   // debug
-  printf("res:-----> %s\n", msg+4);
+  printf("HMI Msg: send %s\n", msg+4);
 
   return pc;
 }
@@ -360,7 +360,7 @@ static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg, c
   msg[3] = (char) (pc);
 
   // debug
-  printf("res:-----> %s\n", msg+4);
+  printf("HMI Msg: send %s\n", msg+4);
 
   return pc;  
 }
@@ -377,6 +377,8 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
 
   (void) len;
 
+  printf("HMI Msg: recv %s\n", payload);
+
   root = cJSON_Parse(payload);
 
   if (root == NULL)
@@ -385,7 +387,7 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
   // TODO: validate whole JSON
   iterator = root->child;
   while(iterator) {
-    if (strcmp(iterator->string, "func_id") == 0) { 
+    if (strcmp(iterator->string, "func-id") == 0) { 
       if (!cJSON_IsNumber(iterator))
         goto last_step;
       func_id_code = iterator->valueint;
@@ -416,6 +418,7 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
       mg_send(p_ctx->hmi, response, resp_len);
       break;
     case CHECK_NEW_PACKAGE:
+      printf("HMI: recv CHECK_NEW_PACKAGE\n");
       resp_len = hmi_resp_check_new_pkg(p_ctx, response, uuid);
       mg_send(p_ctx->hmi, response, resp_len);
       break;
