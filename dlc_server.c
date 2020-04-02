@@ -5,6 +5,7 @@
 
 #include "stdio.h"
 #include "cJSON/cJSON.h"
+#include "log/idcm_log.h"
 #include "mongoose/mongoose.h"
 
 /* reserved buffer to save memory */
@@ -214,7 +215,7 @@ static unsigned int hmi_resp_check_new_pkg(struct bs_context *p_ctx, char *msg, 
   msg[3] = (char) (pc);
 
   // debug
-  printf("HMI Msg: send %s\n", msg+4);
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: send %s\n", msg+4);
 
   return pc;
 }
@@ -270,7 +271,7 @@ static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg, 
   msg[3] = (char) (pc);
 
   // debug
-  printf("HMI Msg: send %s\n", msg+4);
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: send %s\n", msg+4);
 
   return pc;
 }
@@ -360,7 +361,7 @@ static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg, c
   msg[3] = (char) (pc);
 
   // debug
-  printf("HMI Msg: send %s\n", msg+4);
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: send %s\n", msg+4);
 
   return pc;  
 }
@@ -377,7 +378,7 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
 
   (void) len;
 
-  printf("HMI Msg: recv %s\n", payload);
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: recv %s\n", payload);
 
   root = cJSON_Parse(payload);
 
@@ -418,7 +419,7 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
       mg_send(p_ctx->hmi, response, resp_len);
       break;
     case CHECK_NEW_PACKAGE:
-      printf("HMI: recv CHECK_NEW_PACKAGE\n");
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI: recv CHECK_NEW_PACKAGE\n");
       resp_len = hmi_resp_check_new_pkg(p_ctx, response, uuid);
       mg_send(p_ctx->hmi, response, resp_len);
       break;
@@ -443,7 +444,7 @@ static void hmi_msg_handler(struct mg_connection *nc, int ev, void *p) {
   switch (ev) {
     case MG_EV_ACCEPT:
       g_ctx.hmi = nc;
-      printf("HMI: socket connected\n");
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: socket connected\n");
       break;
     case MG_EV_RECV:
       // first 4 bytes for length
@@ -461,10 +462,10 @@ static void * hmi_thread(void * param) {
 
   mg_mgr_init(&mgr, NULL);
 
-  printf("==Start socket server for HMI ==\n");
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"==Start socket server for HMI ==\n");
     // by default, listen to 3001
     mg_bind(&mgr, "3001", hmi_msg_handler);
-    printf("Listen on port 3001 for HMI\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Listen on port 3001 for HMI Msg\n");
 
   while (!p_ctx->hmi_thread_exit) {
     mg_mgr_poll(&mgr, 1000);
@@ -526,7 +527,7 @@ static void * dmc_downloader_thread(void * param) {
     return NULL;
   }
 
-  printf("--> curl start downling!\n");
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"--> curl start downling!\n");
   while (!p_ctx->downloader_thread_exit &&
          fgets(p_ctx->cmd_output, 1024, fp) != NULL) {
     // block until has lock
@@ -536,7 +537,7 @@ static void * dmc_downloader_thread(void * param) {
     // TODO: need better way to check successful downloading  
     g_stat_lock = 0;
   }
-  printf("--> curl finished downloading!\n");
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"--> curl finished downloading!\n");
 
   while (g_stat_lock);
   g_stat_lock = 1;
@@ -598,9 +599,9 @@ static void * cgw_pkg_upload_thread(void *param) {
   strcat(cmd, p_ctx->cgw_api_pkg_upload.api);
 
   if ((fp = popen(cmd, "r")) != NULL) {
-    printf("-->curl start to upload.\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-->curl start to upload.\n");
   } else {
-    printf("-->curl failed to upload.\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-->curl failed to upload.\n");
   }
 
   //TODO: check output
@@ -611,7 +612,7 @@ static void * cgw_pkg_upload_thread(void *param) {
   lock();
   g_stat = ORCH_PKG_READY;//HMI will triger orchestrator to do upgrading
   unlock();  
-  printf("Orchestrator pkg ready: uploading finished!\n");
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg ready: uploading finished!\n");
 
   return NULL;
 }
@@ -624,7 +625,7 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
     case MG_EV_CONNECT:
       g_ctx.cgw_api_pkg_new.nc = nc;
       g_stat = ORCH_PKG_DOWNLOADING;
-      printf("Orchestrator pkg new: connected to send msg\n");
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg new: connected to send msg\n");
       break;
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
@@ -636,7 +637,7 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
     case MG_EV_CLOSE:
       g_ctx.cgw_api_pkg_new.nc = NULL;
       if (g_ctx.cgw_api_pkg_new.cgw_thread_exit == 0) {
-        printf("Orchestrator pkg new: connection closed\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg new: connection closed\n");
         g_ctx.cgw_api_pkg_new.cgw_thread_exit = 1;
       }
       break;
@@ -651,13 +652,13 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
   switch (ev) {
     case MG_EV_CONNECT:
       if (*(int *) ev_data != 0) {
-        printf("Orchestrator pkg status: connect failed\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg status: connect failed\n");
         g_stat = ORCH_PKG_BAD;
         g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 1;
       } else {
         g_ctx.cgw_api_pkg_stat.nc = nc;
         g_stat = ORCH_PKG_DOWNLOADING;
-        printf("Orchestrator pkg status: connected to send msg\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg status: connected to send msg\n");
       }
       break;
     case MG_EV_HTTP_REPLY:
@@ -666,19 +667,19 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
       //g_stat = ORCH_PKG_DOWNLOADING;
       if (strstr(hm->body.p, "succ") != NULL) {
         g_stat = ORCH_PKG_READY;
-        printf("Orchestrator pkg status: pkg ready\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg status: pkg ready\n");
         nc->flags |= MG_F_CLOSE_IMMEDIATELY;
         g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 1;
       } else {
         g_stat = ORCH_PKG_DOWNLOADING;
-        printf("Orchestrator pkg status: pkg downloading\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg status: pkg downloading\n");
       }
 
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_pkg_stat.nc = NULL;
       if (g_ctx.cgw_api_pkg_stat.cgw_thread_exit == 0) {
-        printf("Orchestrator pkg status: closed connection\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg status: closed connection\n");
         g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 1;
       }
       break;
@@ -698,7 +699,7 @@ static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data)
     case MG_EV_CONNECT:
       g_ctx.cgw_api_tdr_run.nc = nc;
       core_state_handler(ORCH_TDR_RUN);
-      printf("Orchestrator tdr run: connected to send msg\n");
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr run: connected to send msg\n");
       break;
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
@@ -723,7 +724,7 @@ static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data)
     case MG_EV_CLOSE:
       g_ctx.cgw_api_tdr_run.nc = NULL;
       if (g_ctx.cgw_api_tdr_run.cgw_thread_exit == 0) {
-        printf("Orchestrator tdr run: closed connection\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr run: closed connection\n");
         g_ctx.cgw_api_tdr_run.cgw_thread_exit = 1;
       }
       break;
@@ -741,13 +742,13 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
     case MG_EV_CONNECT:
       g_ctx.cgw_api_tdr_stat.nc = nc;
       if (*(int *) ev_data != 0) {
-        printf("Orchestrator tdr status: connect failed\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: connect failed\n");
         g_stat = ORCH_CON_ERR;
         g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
       } else {
         g_ctx.cgw_api_tdr_stat.nc = nc;
         g_stat = ORCH_TDR_RUN;
-        printf("Orchestrator tdr status: connected to send msg\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: connected to send msg\n");
       }
       break;
     case MG_EV_HTTP_REPLY:
@@ -772,7 +773,7 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
     case MG_EV_CLOSE:
       g_ctx.cgw_api_tdr_stat.nc = NULL;
       if (g_ctx.cgw_api_tdr_stat.cgw_thread_exit == 0) {
-        printf("Orchestrator tdr status: closed connection\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: closed connection\n");
         g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
       }
       break;
@@ -790,7 +791,7 @@ static void * cgw_msg_thread(void *param) {
 
   while (handler->cgw_thread_exit == 0) {
     if (!wait_stat_unlocked(10000)) {
-      printf("CGW Msg thread: lock timeout\n");
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"CGW Msg thread: lock timeout\n");
     }
 
     // run until one api request end
@@ -828,7 +829,7 @@ static void core_state_handler(unsigned char reset) {
       // TODO: verify checksum of downloaded pkg
       break;
     case DLC_PKG_READY:
-      printf("---> pgk ready\n");
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"---> pgk ready\n");
       mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_pkg_new)); 
       break;
     case ORCH_CON_ERR:
@@ -907,15 +908,15 @@ int main(int argc, char *argv[]) {
 
   mg_mgr_init(&mgr, NULL);
 
-  printf("==Start socket server==\n");
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"==Start socket server==\n");
   if (argc >= 2 && strcmp(argv[1], "-o") == 0) {
     // Listen to specidied port
     mg_bind(&mgr, argv[2], dmc_msg_handler);
-    printf("Listen on port %s\n", argv[2]);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Listen on port %s\n", argv[2]);
   } else {
     // by default, listen to 3000
     mg_bind(&mgr, "3000", dmc_msg_handler);
-    printf("Listen on port 3000\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Listen on port 3000\n");
   }
 
   for (;;) {
