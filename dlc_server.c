@@ -9,8 +9,11 @@
 #include "mongoose/mongoose.h"
 
 /* reserved buffer to save memory */
-static char g_cmd_buf[1024];
+static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
+
+// stub CDN url
+static char *g_stub_url = "\"https://nct.obs.cn-east-2.myhuaweicloud.com:443/HH_WPC_Te_20191209.zip?AWSAccessKeyId=CP9J637QS36VOAHK6WR2&Expires=1586292135&response-content-disposition=inline&x-amz-security-token=gQpjbi1ub3J0aC00jIN8KQH9IME-1NW6166-CXj0C-R1TZkI_RBcDNGs1o6Az5VHF62vZwLT3UTqioD3OThKhJAnKVLdPwOPlURsqMNeIrI67yE3whMKoXUVWJW-OsO1hCZX6Z3pb20xjMdA3htY6W5aQTi0PTrWK-oZ7aoX9VXAEFhvYGlYPVSf4iTYbOf9lHPXTH8O1LrVSH_y5UJ22RCi0buUKFsPyEdYf6z9WQ0ZU7tXt2c1HnT2SaaAoECUfpXbnmJWKoIrNKc4XjzSo13vfFX3JYEQsgv3zY9Or1VC8n3f9dWBZwS0GqClNhsL5wnq1AnfFLCQGCQkP1EQiWUSf4mBjA58NfMeQp5Z6lfNLWpWh2Ny1ogRafA1ortaErL-X5zLmeqK1MYpZcbywqyd2j_mBpRja7XE3mYKiLHODxX2mQKe2_x59LiabyR5lGTQ_Wsa8cUyPMHgZXlie0t0KQdJWyaPv8Qg3lI592RpOwutFVu8viMhtFNsyWHZOeRofSHwg5kKEuRp9GpAoSZqlindqJmeA62PI49yeblO9mOh0GE8Z1lyxetTByYp5JihwiRAH1GG89l0osdYGH1Mv_pKfRJJL6_y9IrXWcrPCNpoaz-W6L-fBkX-j1BaiKgxw-bI6jkTca1xNLv8Wzjp-3gt7UhFHr9qIxeng-aFN3UlWrkw09EGo_1SADPpSGZ9GWaDx3QNGlNcI18ZpHQUrVZnEt9qZAH7R_u9tjB0RCTzi-QSXw-YFFccSD5i4crsUmEhtdC59Ulpd4iQYEcrUurnsJdpP6cNYStcMaGImwNEZEbVvTNipCT5&Signature=EoPE7eHsiurdB%2BeQaYYyymPlUVM%3D\"";
 
 /**
  * CGW API Handler
@@ -531,7 +534,8 @@ static void * dmc_downloader_thread(void * param) {
   while (!p_ctx->downloader_thread_exit &&
          fgets(p_ctx->cmd_output, 1024, fp) != NULL) {
     // block until has lock
-    while (g_stat_lock);
+    if (!wait_stat_unlocked(10000))
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"--> lock timeout in curl downling!\n");
 
     g_stat_lock = 1;
     // TODO: need better way to check successful downloading  
@@ -539,7 +543,10 @@ static void * dmc_downloader_thread(void * param) {
   }
   LOG_PRINT(IDCM_LOG_LEVEL_INFO,"--> curl finished downloading!\n");
 
-  while (g_stat_lock);
+  // block until has lock
+  if (!wait_stat_unlocked(10000))
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"--> lock timeout in curl downling!\n");
+
   g_stat_lock = 1;
   if (pclose(fp) == 0) {
     core_state_handler(DLC_PKG_READY);
@@ -782,12 +789,20 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
   }
 }
 
+static char * core_gen_api_payload() {
+  // TODO: gen payload based on g_ctx 
+  return "{\"deviceId\":\"xxx\",\"payload\":{\"url\":\"127.0.0.1\"}}";
+}
+
 static void * cgw_msg_thread(void *param) {
   struct mg_mgr mgr;
   struct bs_cgw_api_handler * handler = (struct bs_cgw_api_handler *) param;
+  char *post_data = core_gen_api_payload();// TODO: the payload should be generated dynamically
 
   mg_mgr_init(&mgr, NULL);
-  mg_connect_http(&mgr, handler->fn, handler->api, NULL, NULL);
+  mg_connect_http(&mgr, handler->fn, handler->api,
+                  "Content-Type: application/json\r\n",
+                  post_data);
 
   while (handler->cgw_thread_exit == 0) {
     if (!wait_stat_unlocked(10000)) {
@@ -807,8 +822,9 @@ static void * cgw_msg_thread(void *param) {
 
 //---------------------------------------------------------------------------
 // Core state machine
-// Set g_stat_lock=1 before invoking this function
+// Set g_stat_lock=1 before invoking this function, then reset it to 0
 //--------------------------------------------------------------------------- 
+
 static void core_state_handler(unsigned char reset) {
 
   // force to reset
@@ -892,7 +908,7 @@ static void init_context() {
   g_ctx.cmd_buf = g_cmd_buf;
   g_ctx.cmd_output = g_cmd_output;
 
-  g_ctx.pkg_cdn_url = "ftp://speedtest.tele2.net/1KB.zip";
+  g_ctx.pkg_cdn_url = g_stub_url;//"ftp://speedtest.tele2.net/1KB.zip";
   
   g_ctx.downloader = "curl --output wpc.1.0.0"; 
 //  g_ctx.downloader = "/data/duc/test_interface/dlc";
@@ -920,11 +936,12 @@ int main(int argc, char *argv[]) {
   }
 
   for (;;) {
-    if (g_stat_lock)
+    if (g_stat_lock) {
+      sleep(1);
       continue;
+    }
 
     g_stat_lock = 1;
-
     mg_mgr_poll(&mgr, 1000);
     g_stat_lock = 0;
   }
