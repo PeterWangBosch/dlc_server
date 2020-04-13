@@ -110,7 +110,7 @@ static int wait_stat_unlocked(unsigned int timeout) {
   // TODO: lock for context
   unsigned int t = 0;
   while (g_stat_lock && t < timeout) {
-    sleep(0.1);
+    sleep(1);
     t += 100;
   }
 
