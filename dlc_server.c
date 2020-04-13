@@ -13,7 +13,7 @@ static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
 
 // stub CDN url
-static char *g_stub_url = "\"https://nct.obs.cn-east-2.myhuaweicloud.com:443/HH_WPC_Te_20191209.zip?AWSAccessKeyId=CP9J637QS36VOAHK6WR2&Expires=1586292135&response-content-disposition=inline&x-amz-security-token=gQpjbi1ub3J0aC00jIN8KQH9IME-1NW6166-CXj0C-R1TZkI_RBcDNGs1o6Az5VHF62vZwLT3UTqioD3OThKhJAnKVLdPwOPlURsqMNeIrI67yE3whMKoXUVWJW-OsO1hCZX6Z3pb20xjMdA3htY6W5aQTi0PTrWK-oZ7aoX9VXAEFhvYGlYPVSf4iTYbOf9lHPXTH8O1LrVSH_y5UJ22RCi0buUKFsPyEdYf6z9WQ0ZU7tXt2c1HnT2SaaAoECUfpXbnmJWKoIrNKc4XjzSo13vfFX3JYEQsgv3zY9Or1VC8n3f9dWBZwS0GqClNhsL5wnq1AnfFLCQGCQkP1EQiWUSf4mBjA58NfMeQp5Z6lfNLWpWh2Ny1ogRafA1ortaErL-X5zLmeqK1MYpZcbywqyd2j_mBpRja7XE3mYKiLHODxX2mQKe2_x59LiabyR5lGTQ_Wsa8cUyPMHgZXlie0t0KQdJWyaPv8Qg3lI592RpOwutFVu8viMhtFNsyWHZOeRofSHwg5kKEuRp9GpAoSZqlindqJmeA62PI49yeblO9mOh0GE8Z1lyxetTByYp5JihwiRAH1GG89l0osdYGH1Mv_pKfRJJL6_y9IrXWcrPCNpoaz-W6L-fBkX-j1BaiKgxw-bI6jkTca1xNLv8Wzjp-3gt7UhFHr9qIxeng-aFN3UlWrkw09EGo_1SADPpSGZ9GWaDx3QNGlNcI18ZpHQUrVZnEt9qZAH7R_u9tjB0RCTzi-QSXw-YFFccSD5i4crsUmEhtdC59Ulpd4iQYEcrUurnsJdpP6cNYStcMaGImwNEZEbVvTNipCT5&Signature=EoPE7eHsiurdB%2BeQaYYyymPlUVM%3D\"";
+//static char *g_stub_url = "\"https://nct.obs.cn-east-2.myhuaweicloud.com:443/HH_WPC_Te_20191209.zip?AWSAccessKeyId=CP9J637QS36VOAHK6WR2&Expires=1586292135&response-content-disposition=inline&x-amz-security-token=gQpjbi1ub3J0aC00jIN8KQH9IME-1NW6166-CXj0C-R1TZkI_RBcDNGs1o6Az5VHF62vZwLT3UTqioD3OThKhJAnKVLdPwOPlURsqMNeIrI67yE3whMKoXUVWJW-OsO1hCZX6Z3pb20xjMdA3htY6W5aQTi0PTrWK-oZ7aoX9VXAEFhvYGlYPVSf4iTYbOf9lHPXTH8O1LrVSH_y5UJ22RCi0buUKFsPyEdYf6z9WQ0ZU7tXt2c1HnT2SaaAoECUfpXbnmJWKoIrNKc4XjzSo13vfFX3JYEQsgv3zY9Or1VC8n3f9dWBZwS0GqClNhsL5wnq1AnfFLCQGCQkP1EQiWUSf4mBjA58NfMeQp5Z6lfNLWpWh2Ny1ogRafA1ortaErL-X5zLmeqK1MYpZcbywqyd2j_mBpRja7XE3mYKiLHODxX2mQKe2_x59LiabyR5lGTQ_Wsa8cUyPMHgZXlie0t0KQdJWyaPv8Qg3lI592RpOwutFVu8viMhtFNsyWHZOeRofSHwg5kKEuRp9GpAoSZqlindqJmeA62PI49yeblO9mOh0GE8Z1lyxetTByYp5JihwiRAH1GG89l0osdYGH1Mv_pKfRJJL6_y9IrXWcrPCNpoaz-W6L-fBkX-j1BaiKgxw-bI6jkTca1xNLv8Wzjp-3gt7UhFHr9qIxeng-aFN3UlWrkw09EGo_1SADPpSGZ9GWaDx3QNGlNcI18ZpHQUrVZnEt9qZAH7R_u9tjB0RCTzi-QSXw-YFFccSD5i4crsUmEhtdC59Ulpd4iQYEcrUurnsJdpP6cNYStcMaGImwNEZEbVvTNipCT5&Signature=EoPE7eHsiurdB%2BeQaYYyymPlUVM%3D\"";
 
 /**
  * CGW API Handler
@@ -279,9 +279,69 @@ static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg, 
   return pc;
 }
 
+// TODO: a fast but not clean way, directly forward payload received from Orchestrator
+static unsigned int hmi_resp_upgrade_stat_test(struct bs_context *p_ctx, char *msg, const char* uuid, char *forward) {
+  unsigned int pc = 0;
+  char buf[128];
+  static char *resp_header = "\"func-id\":3,\"category\":2,\"response\":[";
+
+  (void) p_ctx;
+
+  // first 4 bytes for length
+  pc += 4;
+
+  // start {
+  msg[pc] = '{';
+  pc += 1;
+
+  // header
+  strcpy(msg + pc, resp_header);
+  pc += strlen(resp_header);
+
+  // start { pkg_status
+  msg[pc] = '{';
+  pc += 1;
+
+  strcpy(msg + pc, forward);
+  pc += strlen(forward);
+
+  // end } pkg_status
+  msg[pc] = '}';
+  pc += 1;
+
+  // end ]
+  msg[pc] = ']';
+  pc += 1;
+
+  msg[pc] = ',';
+  pc += 1;
+
+  // uuid
+  sprintf(buf, "\"uuid\":\"%s\"", uuid);
+  strcpy(msg + pc, buf);
+  pc += strlen(buf);
+
+  // end } whole json
+  msg[pc] = '}';
+  pc += 1;
+
+  msg[pc] = 0; // to be safe
+  pc += 1;
+
+  // the value of pc is the length
+  msg[0] = (char) (pc<< 24);
+  msg[1] = (char) (pc<< 16);
+  msg[2] = (char) (pc<< 8);
+  msg[3] = (char) (pc);
+
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: tdr stat: %s\n", msg+4);
+  return pc;
+}
+
+
 static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg, const char* uuid) {
   unsigned int pc = 0; 
-  static char *resp_header = "\"func-id\":3,\"category\":2,\"response\":{";
+  static char *resp_header = "\"func-id\":3,\"category\":2,\"response\":[";
   char buf[128];
  
   // first 4 bytes for length
@@ -294,6 +354,10 @@ static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg, c
   // header
   strcpy(msg + pc, resp_header);
   pc += strlen(resp_header);
+
+  // start {
+  msg[pc] = '{';
+  pc += 1;
 
   // dev_id
   sprintf(buf, "\"dev_id\":\"%s\",", p_ctx->hmi_upgrade_stat->dev_id);
@@ -403,9 +467,12 @@ static int hmi_payload_parser(struct bs_context *p_ctx, char* payload, unsigned 
 
     iterator = iterator->next;
   }
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: func-id %d\n", func_id_code);
   // TODO: synthesize response acoording to coming in value
   switch(func_id_code) {
     case START_UPGRADE:
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO, "START_UPGRADE\n");
+      
       resp_len = hmi_resp_start_upgrade(p_ctx, response, uuid);
       if (g_stat == ORCH_PKG_READY) {
         wait_stat_unlocked(10000);
@@ -673,7 +740,7 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       //g_stat = ORCH_PKG_DOWNLOADING;
       if (strstr(hm->body.p, "succ") != NULL) {
-        g_stat = ORCH_PKG_READY;
+        //g_stat = ORCH_PKG_READY;
         LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator pkg status: pkg ready\n");
         nc->flags |= MG_F_CLOSE_IMMEDIATELY;
         g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 1;
@@ -698,6 +765,7 @@ static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data
 static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
   struct cJSON * res = NULL;
+  struct cJSON * iterator = NULL;
   char * info = NULL;
 
   (void) info;
@@ -712,8 +780,15 @@ static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data)
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
       // g_stat = ORCH_TDR_FAIL;
       res = cJSON_Parse(hm->body.p);
-      info = cJSON_GetStringValue(res->child);
-
+      iterator = res->child;
+      while(iterator) {
+        if (strcmp(iterator->string, "error") == 0) {
+          info = iterator->valuestring;
+        }
+        iterator = iterator->next;
+      }
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr run: %s\n", info);
+      
       //if (strstr(info, "succ") != NULL) {
       //  core_state_handler(ORCH_TDR_SUCC);
       //  nc->flags |= MG_F_CLOSE_IMMEDIATELY;
@@ -743,7 +818,8 @@ static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data)
 static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
   struct cJSON * res = NULL;
-  char * info = NULL;
+  struct cJSON * iterator = NULL;
+  int progress = 0;
 
   switch (ev) {
     case MG_EV_CONNECT:
@@ -759,20 +835,39 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
       }
       break;
     case MG_EV_HTTP_REPLY:
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status response: %s\n", hm->body.p);
       //TODO: parse JSON, if error then g_stat = ORCH_TDR_FAIL;
       res = cJSON_Parse(hm->body.p);
-      info = cJSON_GetStringValue(res->child);
+      if (!res || (iterator = cJSON_GetObjectItem(res, "result"))) {
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: bad json\n");
+        break;
+      }
 
-      if (strstr(info, "succ") != NULL) {
+      nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+      g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
+
+      iterator = iterator->child;
+      while(iterator) {
+        if (strcmp(iterator->string, "error") == 0) {
+          core_state_handler(ORCH_TDR_FAIL);
+          //TODO response error
+          LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: %s\n", iterator->valuestring);
+          return;
+        } else if (strcmp(iterator->string, "progress_percent") == 0) { // progress : 100%
+          progress = iterator->valueint;
+          break;
+        } 
+        iterator = iterator->next;
+      }
+
+      if (!iterator) {
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: %s\n", iterator->valuestring);
+        return;
+      } else if(progress == 100) {
+        //TODO report stat
         core_state_handler(ORCH_TDR_SUCC);
-        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-        g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
-      } else if (strstr(info, "fail") != NULL) {
-        g_stat = ORCH_TDR_FAIL;
-        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
-        g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
       } else {
-        //TODO: report update progress  
+        //TODO report stat
         g_stat = ORCH_TDR_RUN;
       }
 
@@ -863,6 +958,7 @@ static void core_state_handler(unsigned char reset) {
       mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_tdr_stat)); 
       break;
     case ORCH_TDR_FAIL:
+      mg_send(g_ctx.dmc, "{\"result\":\"TDR run failed\"}\n", 31);
       break;
     case ORCH_TDR_SUCC:
       mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\"}\n", 31);
@@ -908,7 +1004,7 @@ static void init_context() {
   g_ctx.cmd_buf = g_cmd_buf;
   g_ctx.cmd_output = g_cmd_output;
 
-  g_ctx.pkg_cdn_url = g_stub_url;//"ftp://speedtest.tele2.net/1KB.zip";
+  g_ctx.pkg_cdn_url = "ftp://speedtest.tele2.net/1KB.zip";
   
   g_ctx.downloader = "curl --output wpc.1.0.0"; 
 //  g_ctx.downloader = "/data/duc/test_interface/dlc";
