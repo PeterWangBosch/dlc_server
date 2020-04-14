@@ -140,11 +140,11 @@ static void init_hmi_objs(struct bs_context * p_ctx) {
   p_ctx->hmi_upgrade_stat = &_hmi_upgrade_stat;
 
   strcpy(_hmi_pkg_info.door_module, "no");
-  strcpy(_hmi_pkg_info.dev_id, "FP_001_FID1");
+  strcpy(_hmi_pkg_info.dev_id, "xxx");
   strcpy(_hmi_pkg_info.soft_id, "wpc.1.0.0.0");
   strcpy(_hmi_pkg_info.release_notes, "N/A");
 
-  strcpy(_hmi_upgrade_stat.dev_id, "FP_001_FID1");
+  strcpy(_hmi_upgrade_stat.dev_id, "xxx");
   strcpy(_hmi_upgrade_stat.soft_id, "wpc.1.0.0.0");
   strcpy(_hmi_upgrade_stat.esti_time, "00:00:00 01-01-1900");
   strcpy(_hmi_upgrade_stat.start_time, "00:00:00 01-01-1900");
@@ -279,63 +279,37 @@ static unsigned int hmi_resp_start_upgrade(struct bs_context *p_ctx, char *msg, 
   return pc;
 }
 
-// TODO: a fast but not clean way, directly forward payload received from Orchestrator
-static unsigned int hmi_resp_upgrade_stat_test(struct bs_context *p_ctx, char *msg, const char* uuid, char *forward) {
-  unsigned int pc = 0;
-  char buf[128];
-  static char *resp_header = "\"func-id\":3,\"category\":2,\"response\":[";
+// -1: TDR error | 1: progress 100% | 0: in progress
+static unsigned int hmi_resp_upgrade_stat_update(struct bs_context *p_ctx, cJSON * json) {
+  cJSON * iterator = NULL;
 
-  (void) p_ctx;
+  iterator = json->child;
+  while(iterator) {
 
-  // first 4 bytes for length
-  pc += 4;
+    if (strcmp(iterator->string, "error") == 0) {
+      //TODO response error
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: %s\n", iterator->valuestring);
+      return -1;
+    } else if (strcmp(iterator->string, "esti_time") == 0) {
+      strcpy(p_ctx->hmi_upgrade_stat->esti_time, iterator->valuestring);
+    } else if (strcmp(iterator->string, "start_time") == 0) {
+      strcpy(p_ctx->hmi_upgrade_stat->start_time, iterator->valuestring);
+    } else if (strcmp(iterator->string, "time_stamp") == 0) {
+      strcpy(p_ctx->hmi_upgrade_stat->time_stamp, iterator->valuestring);
+    } else if (strcmp(iterator->string, "status") == 0) {
+      strcpy(p_ctx->hmi_upgrade_stat->status, iterator->valuestring);
+    } else if (strcmp(iterator->string, "progress_percent") == 0) {
+      p_ctx->hmi_upgrade_stat->progress_percent = iterator->valueint;
+    }
 
-  // start {
-  msg[pc] = '{';
-  pc += 1;
+    if (p_ctx->hmi_upgrade_stat->progress_percent >= 100) {
+      return 1;
+    }
+    iterator = iterator->next;
+  }
 
-  // header
-  strcpy(msg + pc, resp_header);
-  pc += strlen(resp_header);
-
-  // start { pkg_status
-  msg[pc] = '{';
-  pc += 1;
-
-  strcpy(msg + pc, forward);
-  pc += strlen(forward);
-
-  // end } pkg_status
-  msg[pc] = '}';
-  pc += 1;
-
-  // end ]
-  msg[pc] = ']';
-  pc += 1;
-
-  msg[pc] = ',';
-  pc += 1;
-
-  // uuid
-  sprintf(buf, "\"uuid\":\"%s\"", uuid);
-  strcpy(msg + pc, buf);
-  pc += strlen(buf);
-
-  // end } whole json
-  msg[pc] = '}';
-  pc += 1;
-
-  msg[pc] = 0; // to be safe
-  pc += 1;
-
-  // the value of pc is the length
-  msg[0] = (char) (pc<< 24);
-  msg[1] = (char) (pc<< 16);
-  msg[2] = (char) (pc<< 8);
-  msg[3] = (char) (pc);
-
-  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: tdr stat: %s\n", msg+4);
-  return pc;
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Update upgrade_stat: %s\n", cJSON_Print(json));
+  return 0;
 }
 
 
@@ -818,8 +792,11 @@ static void cgw_handler_tdr_run(struct mg_connection *nc, int ev, void *ev_data)
 static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
   struct cJSON * res = NULL;
-  struct cJSON * iterator = NULL;
-  int progress = 0;
+  struct cJSON * result = NULL;
+  int upgrade_stat = 0;
+  // TODO: move to hmi thread
+  int resp_len = 0;
+  char response[512];
 
   switch (ev) {
     case MG_EV_CONNECT:
@@ -838,7 +815,7 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status response: %s\n", hm->body.p);
       //TODO: parse JSON, if error then g_stat = ORCH_TDR_FAIL;
       res = cJSON_Parse(hm->body.p);
-      if (!res || (iterator = cJSON_GetObjectItem(res, "result"))) {
+      if (!res || !(result = cJSON_GetObjectItem(res, "result"))) {
         LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: bad json\n");
         break;
       }
@@ -846,31 +823,19 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
       g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 1;
 
-      iterator = iterator->child;
-      while(iterator) {
-        if (strcmp(iterator->string, "error") == 0) {
-          core_state_handler(ORCH_TDR_FAIL);
-          //TODO response error
-          LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: %s\n", iterator->valuestring);
-          return;
-        } else if (strcmp(iterator->string, "progress_percent") == 0) { // progress : 100%
-          progress = iterator->valueint;
-          break;
-        } 
-        iterator = iterator->next;
-      }
-
-      if (!iterator) {
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Orchestrator tdr status: %s\n", iterator->valuestring);
-        return;
-      } else if(progress == 100) {
-        //TODO report stat
+      upgrade_stat = hmi_resp_upgrade_stat_update(&g_ctx, result);
+      if (upgrade_stat < 0) {
+        core_state_handler(ORCH_TDR_FAIL);
+      } else if (upgrade_stat == 0) {
+        // TODO: move response to hmi thread
+        resp_len = hmi_resp_upgrade_stat(&g_ctx, response, "7950f8e2-6cd4-11ea-a9a9-571f576d565b"); // TODO: generate uuid
+        mg_send(g_ctx.hmi, response, resp_len);
+        core_state_handler(ORCH_TDR_RUN);
+      } else if (upgrade_stat > 0) {
         core_state_handler(ORCH_TDR_SUCC);
-      } else {
-        //TODO report stat
-        g_stat = ORCH_TDR_RUN;
       }
 
+      cJSON_Delete(res);
       break;
     case MG_EV_CLOSE:
       g_ctx.cgw_api_tdr_stat.nc = NULL;
@@ -955,6 +920,7 @@ static void core_state_handler(unsigned char reset) {
       mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_tdr_run)); 
       break;
     case ORCH_TDR_RUN:
+      // TODO: protect two instances running in parallel
       mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_tdr_stat)); 
       break;
     case ORCH_TDR_FAIL:
