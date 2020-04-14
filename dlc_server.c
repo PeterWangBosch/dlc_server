@@ -315,7 +315,7 @@ static unsigned int hmi_resp_upgrade_stat_update(struct bs_context *p_ctx, cJSON
 
 static unsigned int hmi_resp_upgrade_stat(struct bs_context *p_ctx, char *msg, const char* uuid) {
   unsigned int pc = 0; 
-  static char *resp_header = "\"func-id\":3,\"category\":2,\"response\":[";
+  static char *resp_header = "\"func-id\":3,\"category\":2,\"id\":\"xxx\",\"version\":\"1.0.0\",\"response\":[";
   char buf[128];
  
   // first 4 bytes for length
