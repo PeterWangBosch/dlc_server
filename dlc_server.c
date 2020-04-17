@@ -598,6 +598,32 @@ static int dmc_downloader_run(struct bs_context * p_ctx) {
   return 1;
 }
 
+
+static int dmc_msg_parse(const char *json) {
+  unsigned char next_stat = STAT_INVALID;
+  struct cJSON * root = NULL;
+  struct cJSON * iterator = NULL;
+
+  root = cJSON_Parse(json);
+  if (root == NULL) {
+    return next_stat;
+  }
+
+  // TODO: parse out each part
+  // goto finish_parse when something wrong
+  (void) iterator;
+
+  if (strstr(json, "http") != NULL) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Received New Package Nofifiction\n");
+    next_stat = DLC_PKG_NEW;
+  }
+
+
+//finish_parse:
+  cJSON_Delete(root);
+  return next_stat;
+}
+
 static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
   struct mbuf *io = &nc->recv_mbuf;
   unsigned int len = 0;
@@ -615,7 +641,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
       len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);   
       //TODO: parse JSON
       (void) len;
-      core_state_handler(STAT_INVALID);
+      core_state_handler(dmc_msg_parse(io->buf));
       mbuf_remove(io, io->len);       // Discard message from recv buffer
       break;
     default:
@@ -792,7 +818,7 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
   int upgrade_stat = 0;
   // TODO: move to hmi thread
   int resp_len = 0;
-  char response[512];
+  static char response[512];
 
   switch (ev) {
     case MG_EV_CONNECT:
@@ -847,7 +873,7 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
 
 static char * core_gen_api_payload() {
   // TODO: gen payload based on g_ctx 
-  return "{\"deviceId\":\"xxx\",\"payload\":{\"url\":\"127.0.0.1\"}}";
+  return "{\"dev_id\":\"xxx\",\"payload\":{\"url\":\"127.0.0.1\"}}";
 }
 
 static void * cgw_msg_thread(void *param) {
@@ -893,7 +919,6 @@ static void core_state_handler(unsigned char reset) {
       break;
     case DLC_PKG_NEW:
       // TODO: parse received JSON
-
       dmc_downloader_run(&g_ctx);
       g_stat = DLC_PKG_DOWNLOADING;
       break;
