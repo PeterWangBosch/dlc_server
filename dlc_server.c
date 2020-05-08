@@ -12,16 +12,17 @@
 static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
 
-// stub CDN url
-//static char *g_stub_url = "\"https://nct.obs.cn-east-2.myhuaweicloud.com:443/HH_WPC_Te_20191209.zip?AWSAccessKeyId=CP9J637QS36VOAHK6WR2&Expires=1586292135&response-content-disposition=inline&x-amz-security-token=gQpjbi1ub3J0aC00jIN8KQH9IME-1NW6166-CXj0C-R1TZkI_RBcDNGs1o6Az5VHF62vZwLT3UTqioD3OThKhJAnKVLdPwOPlURsqMNeIrI67yE3whMKoXUVWJW-OsO1hCZX6Z3pb20xjMdA3htY6W5aQTi0PTrWK-oZ7aoX9VXAEFhvYGlYPVSf4iTYbOf9lHPXTH8O1LrVSH_y5UJ22RCi0buUKFsPyEdYf6z9WQ0ZU7tXt2c1HnT2SaaAoECUfpXbnmJWKoIrNKc4XjzSo13vfFX3JYEQsgv3zY9Or1VC8n3f9dWBZwS0GqClNhsL5wnq1AnfFLCQGCQkP1EQiWUSf4mBjA58NfMeQp5Z6lfNLWpWh2Ny1ogRafA1ortaErL-X5zLmeqK1MYpZcbywqyd2j_mBpRja7XE3mYKiLHODxX2mQKe2_x59LiabyR5lGTQ_Wsa8cUyPMHgZXlie0t0KQdJWyaPv8Qg3lI592RpOwutFVu8viMhtFNsyWHZOeRofSHwg5kKEuRp9GpAoSZqlindqJmeA62PI49yeblO9mOh0GE8Z1lyxetTByYp5JihwiRAH1GG89l0osdYGH1Mv_pKfRJJL6_y9IrXWcrPCNpoaz-W6L-fBkX-j1BaiKgxw-bI6jkTca1xNLv8Wzjp-3gt7UhFHr9qIxeng-aFN3UlWrkw09EGo_1SADPpSGZ9GWaDx3QNGlNcI18ZpHQUrVZnEt9qZAH7R_u9tjB0RCTzi-QSXw-YFFccSD5i4crsUmEhtdC59Ulpd4iQYEcrUurnsJdpP6cNYStcMaGImwNEZEbVvTNipCT5&Signature=EoPE7eHsiurdB%2BeQaYYyymPlUVM%3D\"";
+//static char * g_stub_report = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.100\",\"dlc\":\"0.100\"},\"upgradeResults\":{\"servicePack\":\"VDCM\",\"campaign\":\"VDCM\",\"downloadStartTime\":\"20200501 240000\",\"downloadFinishTime\":\"20200501 240000\",\"userConfirmationTime\":\"20200501 240000\",\"startTime\":\"20200501 240000\",\"finishTime\":\"20200501 240000\",\"result\":\"success\",\"dlcReports\":[{\"timestamp\":\"20200501 240000\",\"errorCode\":-1,\"trace\":\"\"}],\"deviceReports\":[{\"ecu\":\"VDCM\",\"softwareId\":\"VDCM2.0.0\",\"startTime\":\"20200501 240000\",\"finishTime\":\"20200501 240000\",\"previousVersion\":\"1.0.0\",\"result\":\"success\",\"targetVersion\":\"2.0.0\",\"currentVersion\":\"1.0.0\",\"logs\":[{\"timestamp\":\"20200501 240000\",\"progress\":0,\"errorCode\":-1,\"trace\":\"\"}]}]}}";
 
 /**
  * CGW API Handler
 **/
+typedef char * (* api_payload_gener) ();
 struct bs_cgw_api_handler {
   bool cgw_thread_exit;
   char * api;
   mg_event_handler_t fn;
+  api_payload_gener payload_gener;
   struct mg_connection * nc;
 };
 
@@ -82,6 +83,10 @@ struct bs_ecu_upgrade_stat {
 #define ORCH_TDR_SUCC 0x70
 static unsigned char g_stat = 0;
 static unsigned char g_stat_lock = 0;
+struct bs_l1_manifest {
+  char dev_id[32];
+  char pkg_cdn_url[128];
+};
 struct bs_context {
   struct mg_connection * dmc;
   struct mg_connection * hmi;
@@ -96,8 +101,9 @@ struct bs_context {
   struct bs_ecu_upgrade_stat * hmi_upgrade_stat;
   char * tftp_server;
   char * downloader;
-  char * pkg_cdn_url;
+  char * pkg_url;
   char * cmd_buf;
+  struct bs_l1_manifest cur_manifest;
   char * cmd_output;
   
   void * data;
@@ -561,7 +567,7 @@ static void * dmc_downloader_thread(void * param) {
   // TODO: memeset g_cmd_buf to zero and check the length of url and dlc_path
   strcpy(p_ctx->cmd_buf, p_ctx->downloader);
   strcat(p_ctx->cmd_buf, " ");
-  strcat(p_ctx->cmd_buf, p_ctx->pkg_cdn_url);    
+  strcat(p_ctx->cmd_buf, p_ctx->pkg_url);    
 
   if ((fp = popen(p_ctx->cmd_buf, "r")) != NULL) {
 //    mg_send(p_ctx->dmc, succ, strlen(succ));
@@ -600,26 +606,42 @@ static int dmc_downloader_run(struct bs_context * p_ctx) {
   return 1;
 }
 
+static struct cJSON * find_json_child(struct cJSON * root, char * label)
+{
+  struct cJSON * iterator = NULL;
+
+  iterator = root->child;
+  while(iterator) {
+    if (strcmp(iterator->string, label) == 0) {
+      return iterator;
+    }
+    iterator = iterator->next;
+  }
+  return iterator;
+}
+
 
 static int dmc_msg_parse(const char *json) {
   unsigned char next_stat = STAT_INVALID;
   struct cJSON * root = NULL;
   struct cJSON * iterator = NULL;
 
+  // parse L1 Menifest
   root = cJSON_Parse(json);
   if (root == NULL) {
     return next_stat;
   }
 
-  // TODO: parse out each part
-  // goto finish_parse when something wrong
-  (void) iterator;
-
-  if (strstr(json, "http") != NULL) {
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Received New Package Nofifiction\n");
-    next_stat = DLC_PKG_NEW;
+  iterator = find_json_child(root, "fotaCertUrl");
+  if (iterator == NULL) {
+    return next_stat;
   }
-
+  // save downloading url. TODO: in parallel downloaing
+  strcpy(g_ctx.cur_manifest.pkg_cdn_url, iterator->valuestring);
+  g_ctx.pkg_url = g_ctx.cur_manifest.pkg_cdn_url;
+  // TODO: parse out each part
+  // parse devid 
+  strcpy(g_ctx.cur_manifest.dev_id, "VDCM");  
 
 //finish_parse:
   cJSON_Delete(root);
@@ -876,15 +898,23 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
   }
 }
 
-static char * core_gen_api_payload() {
+static char * cgw_api_payload_pkg_new() {
+  // TODO: gen payload based on g_ctx
+  static char buf[256];
+  sprintf(buf, "{\"dev_id\":\"%s\",\"payload\":{\"url\":\"%s\"}}",
+          g_ctx.cur_manifest.dev_id, g_ctx.cur_manifest.pkg_cdn_url);
+  return buf;
+}
+
+static char * cgw_api_payload_default() {
   // TODO: gen payload based on g_ctx 
-  return "{\"dev_id\":\"xxx\",\"payload\":{\"url\":\"127.0.0.1\"}}";
+  return "{\"dev_id\":\"VDCM\"}}";
 }
 
 static void * cgw_msg_thread(void *param) {
   struct mg_mgr mgr;
   struct bs_cgw_api_handler * handler = (struct bs_cgw_api_handler *) param;
-  char *post_data = core_gen_api_payload();// TODO: the payload should be generated dynamically
+  char *post_data = handler->payload_gener();// TODO: the payload should be generated dynamically
 
   mg_mgr_init(&mgr, NULL);
   mg_connect_http(&mgr, handler->fn, handler->api,
@@ -975,28 +1005,36 @@ static void init_context() {
   g_ctx.cgw_api_pkg_new.api = "http://127.0.0.1:8018/pkg/new";
   g_ctx.cgw_api_pkg_new.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
+  g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_pkg_new;
   g_ctx.cgw_api_pkg_new.nc = NULL;
   g_ctx.cgw_api_pkg_stat.api = "http://127.0.0.1:8018/pkg/sta";
   g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_stat.fn = cgw_handler_pkg_stat;
+  g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_pkg_stat.nc = NULL;
   g_ctx.cgw_api_tdr_run.api = "http://127.0.0.1:8018/tdr/run";
   g_ctx.cgw_api_tdr_run.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_run.fn = cgw_handler_tdr_run;
+  g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_tdr_run.nc = NULL;
   g_ctx.cgw_api_tdr_stat.api = "http://127.0.0.1:8018/tdr/stat";
   g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_stat.fn = cgw_handler_tdr_stat;
+  g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_tdr_stat.nc = NULL;
   // TODO: so far use curl to upload
   g_ctx.cgw_api_pkg_upload.api = "http://127.0.0.1:8018/upload";
   g_ctx.cgw_api_pkg_upload.fn = NULL;
   g_ctx.cgw_api_pkg_upload.nc = NULL;
+  g_ctx.cgw_api_pkg_new.payload_gener = NULL;
 
   g_ctx.cmd_buf = g_cmd_buf;
   g_ctx.cmd_output = g_cmd_output;
 
-  g_ctx.pkg_cdn_url = "ftp://speedtest.tele2.net/1KB.zip";
+  g_ctx.pkg_url = "ftp://speedtest.tele2.net/1KB.zip";
+
+  memset(g_ctx.cur_manifest.dev_id, 0, 32);
+  memset(g_ctx.cur_manifest.pkg_cdn_url, 0, 128);
   
   g_ctx.downloader = "curl --output wpc.1.0.0"; 
 //  g_ctx.downloader = "/data/duc/test_interface/dlc";
