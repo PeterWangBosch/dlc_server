@@ -564,11 +564,9 @@ static void * dmc_downloader_thread(void * param) {
   strcat(p_ctx->cmd_buf, p_ctx->pkg_cdn_url);    
 
   if ((fp = popen(p_ctx->cmd_buf, "r")) != NULL) {
-//    mg_send(p_ctx->dmc, succ, strlen(succ));
-    (void) succ;
+    mg_send(p_ctx->dmc, succ, strlen(succ));
   } else {
-//    mg_send(p_ctx->dmc, fail, strlen(fail));
-    (void) fail;
+    mg_send(p_ctx->dmc, fail, strlen(fail));
     return NULL;
   }
 
@@ -634,19 +632,16 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
   switch (ev) {
     case MG_EV_ACCEPT:
       g_ctx.dmc = nc;
-//      dmc_tftp_run(&g_ctx);
+      dmc_tftp_run(&g_ctx);
       hmi_thread_run(&g_ctx);
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"DMC Socket Wrapper connected!\n");
-//      core_state_handler(DLC_PKG_NEW);//TODO: it's only for test, drop it
+      core_state_handler(DLC_PKG_NEW);//TODO: it's only for test, drop it
       break;
     case MG_EV_RECV:
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"%s \n", &(io->buf[4]));
       // first 4 bytes for length
       len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);   
       //TODO: parse JSON
       (void) len;
-      core_state_handler(dmc_msg_parse(io->buf+4));
+      core_state_handler(dmc_msg_parse(io->buf));
       mbuf_remove(io, io->len);       // Discard message from recv buffer
       break;
     default:
