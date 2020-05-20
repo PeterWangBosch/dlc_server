@@ -12,7 +12,7 @@
 static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
 
-static char * g_stub_report = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.100\",\"dlc\":\"0.100\"},\"upgradeResults\":{\"servicePack\":\"VDCM\",\"campaign\":\"VDCM\",\"downloadStartTime\":\"20200501 240000\",\"downloadFinishTime\":\"20200501 240000\",\"userConfirmationTime\":\"20200501 240000\",\"startTime\":\"20200501 240000\",\"finishTime\":\"20200501 240000\",\"result\":\"success\",\"dlcReports\":[{\"timestamp\":\"20200501 240000\",\"errorCode\":-1,\"trace\":\"\"}],\"deviceReports\":[{\"ecu\":\"VDCM\",\"softwareId\":\"VDCM2.0.0\",\"startTime\":\"20200501 240000\",\"finishTime\":\"20200501 240000\",\"previousVersion\":\"1.0.0\",\"result\":\"success\",\"targetVersion\":\"2.0.0\",\"currentVersion\":\"1.0.0\",\"logs\":[{\"timestamp\":\"20200501 240000\",\"progress\":0,\"errorCode\":-1,\"trace\":\"\"}]}]}}";
+static char * g_stub_inventory = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.1.0.0\",\"dlc\":\"0.1.0.0\"},\"inventory\":[{\"ecu\":\"VDCM\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"WPC\",\"softwareList\":[{\"softwareId\":\"WPC1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"wpc_pack\",\"campaign\":\"wpc_camp\"}]}]}";
 
 /**
  * CGW API Handler
@@ -129,6 +129,70 @@ static void lock() {
 
 static void unlock() {
   g_stat_lock = 0;
+}
+
+// -------------------------------------------------------------------
+// monitoring thread 
+// -------------------------------------------------------------------
+static void cgw_monitor_handle_status(struct mg_connection *nc, int ev, void *ev_data) {
+  struct http_message * hm = (struct http_message *) ev_data;
+  static char resp[512];
+  unsigned int len = 0;
+  (void) nc;
+  (void) ev;
+
+  if (hm && hm->body.p) {
+    len = strlen(hm->body.p);
+    strcpy(resp+4, hm->body.p);
+    resp[0] = (char) (len<< 24); 
+    resp[1] = (char) (len<< 16); 
+    resp[2] = (char) (len<< 8);
+    resp[3] = (char) (len);
+  }
+
+  mg_send(g_ctx.dmc, resp, len+4);
+}
+
+static struct mg_serve_http_opts s_http_server_opts;
+
+static void ev_handler(struct mg_connection *nc, int ev, void *ev_data) {
+  if (ev == MG_EV_HTTP_REQUEST) {
+    mg_serve_http(nc, ev_data, s_http_server_opts);
+  }
+}
+
+static void * cgw_msg_monitor_thread(void *param) {
+  struct mg_mgr mgr;
+  struct mg_connection *nc;
+  struct mg_bind_opts bind_opts;
+  const char *err_str;
+  (void) param;
+
+  mg_mgr_init(&mgr, NULL);
+
+  /* Set HTTP server options */
+  memset(&bind_opts, 0, sizeof(bind_opts));
+  bind_opts.error_string = &err_str;
+
+  nc = mg_bind_opt(&mgr, "8019", ev_handler, bind_opts);
+  if (nc == NULL) {
+    fprintf(stderr, "Error starting server on port %s: %s\n", "8019",
+            *bind_opts.error_string);
+    exit(1);
+  }
+
+  // Register endpoints
+  mg_register_http_endpoint(nc, "/status", cgw_monitor_handle_status MG_UD_ARG(NULL));
+  // Set up HTTP server parameters
+  mg_set_protocol_http_websocket(nc);
+
+  for (;;) {
+    mg_mgr_poll(&mgr, 1000);
+  }
+
+  mg_mgr_free(&mgr);
+
+  return 0;
 }
 //---------------------------------------------------------------------------
 // Communication with HMI
@@ -651,9 +715,9 @@ static int dmc_msg_parse(const char *json) {
 static void dmc_resp_inventory(struct mg_connection *nc)
 {
   static char resp[512];
-  unsigned int len = strlen(g_stub_report);
+  unsigned int len = strlen(g_stub_inventory);
 
-  strcpy(resp+4, g_stub_report);
+  strcpy(resp+4, g_stub_inventory);
   resp[0] = (char) (len<< 24);
   resp[1] = (char) (len<< 16);
   resp[2] = (char) (len<< 8);
@@ -674,8 +738,10 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 //      dmc_tftp_run(&g_ctx);
       hmi_thread_run(&g_ctx);
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"DMC Socket Wrapper connected!\n");
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", g_stub_report);
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", g_stub_inventory);
       dmc_resp_inventory(nc);
+
+      cgw_msg_monitor_thread(cgw_msg_monitor_thread);
       break;
     case MG_EV_RECV:
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
@@ -742,8 +808,14 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
       break;
     case MG_EV_HTTP_REPLY:
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
-      g_stat = ORCH_PKG_DOWNLOADING;
-      mg_start_thread(cgw_pkg_upload_thread, (void *) &g_ctx);
+
+      // TODO: need to make sure it's selfinstaller
+      if (strcmp(g_ctx.cur_manifest.dev_id, "VDCM") == 0) {
+        g_stat = ORCH_TDR_RUN;// orchestrator dealwith selfinstaller
+      } else {
+        g_stat = ORCH_PKG_DOWNLOADING;
+        mg_start_thread(cgw_pkg_upload_thread, (void *) &g_ctx);
+      }
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
       g_ctx.cgw_api_pkg_new.cgw_thread_exit = 1;
       break;
@@ -953,6 +1025,7 @@ static void * cgw_msg_thread(void *param) {
   return NULL;
 }
 
+
 //---------------------------------------------------------------------------
 // Core state machine
 // Set g_stat_lock=1 before invoking this function, then reset it to 0
@@ -996,10 +1069,10 @@ static void core_state_handler(unsigned char reset) {
       mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_tdr_stat)); 
       break;
     case ORCH_TDR_FAIL:
-      mg_send(g_ctx.dmc, "{\"result\":\"TDR run failed\"}\n", 31);
+      //mg_send(g_ctx.dmc, "{\"result\":\"TDR run failed\"}\n", 31);
       break;
     case ORCH_TDR_SUCC:
-      mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\"}\n", 31);
+      //mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\"}\n", 31);
       break;
     default:
       break;
