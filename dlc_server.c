@@ -12,7 +12,7 @@
 static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
 
-//static char * g_stub_report = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.100\",\"dlc\":\"0.100\"},\"upgradeResults\":{\"servicePack\":\"VDCM\",\"campaign\":\"VDCM\",\"downloadStartTime\":\"20200501 240000\",\"downloadFinishTime\":\"20200501 240000\",\"userConfirmationTime\":\"20200501 240000\",\"startTime\":\"20200501 240000\",\"finishTime\":\"20200501 240000\",\"result\":\"success\",\"dlcReports\":[{\"timestamp\":\"20200501 240000\",\"errorCode\":-1,\"trace\":\"\"}],\"deviceReports\":[{\"ecu\":\"VDCM\",\"softwareId\":\"VDCM2.0.0\",\"startTime\":\"20200501 240000\",\"finishTime\":\"20200501 240000\",\"previousVersion\":\"1.0.0\",\"result\":\"success\",\"targetVersion\":\"2.0.0\",\"currentVersion\":\"1.0.0\",\"logs\":[{\"timestamp\":\"20200501 240000\",\"progress\":0,\"errorCode\":-1,\"trace\":\"\"}]}]}}";
+static char * g_stub_report = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.100\",\"dlc\":\"0.100\"},\"upgradeResults\":{\"servicePack\":\"VDCM\",\"campaign\":\"VDCM\",\"downloadStartTime\":\"20200501 240000\",\"downloadFinishTime\":\"20200501 240000\",\"userConfirmationTime\":\"20200501 240000\",\"startTime\":\"20200501 240000\",\"finishTime\":\"20200501 240000\",\"result\":\"success\",\"dlcReports\":[{\"timestamp\":\"20200501 240000\",\"errorCode\":-1,\"trace\":\"\"}],\"deviceReports\":[{\"ecu\":\"VDCM\",\"softwareId\":\"VDCM2.0.0\",\"startTime\":\"20200501 240000\",\"finishTime\":\"20200501 240000\",\"previousVersion\":\"1.0.0\",\"result\":\"success\",\"targetVersion\":\"2.0.0\",\"currentVersion\":\"1.0.0\",\"logs\":[{\"timestamp\":\"20200501 240000\",\"progress\":0,\"errorCode\":-1,\"trace\":\"\"}]}]}}";
 
 /**
  * CGW API Handler
@@ -648,7 +648,22 @@ static int dmc_msg_parse(const char *json) {
   return next_stat;
 }
 
-static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
+static void dmc_resp_inventory(struct mg_connection *nc)
+{
+  static char resp[512];
+  unsigned int len = strlen(g_stub_report);
+
+  strcpy(resp+4, g_stub_report);
+  resp[0] = (char) (len<< 24);
+  resp[1] = (char) (len<< 16);
+  resp[2] = (char) (len<< 8);
+  resp[3] = (char) (len);
+
+  mg_send(nc, resp, len+4);
+}
+
+static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
+{
   struct mbuf *io = &nc->recv_mbuf;
   unsigned int len = 0;
   (void) p;
@@ -659,7 +674,8 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p) {
 //      dmc_tftp_run(&g_ctx);
       hmi_thread_run(&g_ctx);
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"DMC Socket Wrapper connected!\n");
-//      core_state_handler(DLC_PKG_NEW);//TODO: it's only for test, drop it
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", g_stub_report);
+      dmc_resp_inventory(nc);
       break;
     case MG_EV_RECV:
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
