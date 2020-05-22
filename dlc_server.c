@@ -12,7 +12,7 @@
 static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
 
-static char * g_stub_inventory = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.1.0.0\",\"dlc\":\"0.1.0.0\"},\"inventory\":[{\"ecu\":\"VDCM\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"WPC\",\"softwareList\":[{\"softwareId\":\"WPC1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"wpc_pack\",\"campaign\":\"wpc_camp\"}]}]}";
+static char * g_stub_inventory = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.1.0.0\",\"dlc\":\"0.1.0.0\"},\"inventory\":[{\"ecu\":\"WPC\",\"softwareList\":[{\"softwareId\":\"WPC1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"unknown\",\"campaign\":\"unknown\"}]},{\"ecu\":\"VDCM1\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM2\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM3\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM4\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]}}";
 
 /**
  * CGW API Handler
@@ -142,15 +142,20 @@ static void cgw_monitor_handle_status(struct mg_connection *nc, int ev, void *ev
   (void) ev;
 
   if (hm && hm->body.p) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"---------Recv status report from CGW--------\n"); 
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO," %s\n", hm->body.p); 
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"---------------------------------------------\n"); 
     len = strlen(hm->body.p);
     strcpy(resp+4, hm->body.p);
     resp[0] = (char) (len<< 24); 
     resp[1] = (char) (len<< 16); 
     resp[2] = (char) (len<< 8);
     resp[3] = (char) (len);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-------------Send status report to DMC-------\n"); 
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO," %s\n", resp+4); 
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"---------------------------------------------\n"); 
+    mg_send(g_ctx.dmc, resp, len+4);
   }
-
-  mg_send(g_ctx.dmc, resp, len+4);
 }
 
 static struct mg_serve_http_opts s_http_server_opts;
@@ -621,40 +626,41 @@ static int dmc_downloader_stat(struct bs_context * p_ctx) {
 }
 
 static void * dmc_downloader_thread(void * param) {
-  // TODO: format message according convention with SocketWrapper
-  char * succ = "{ \"DLC pkg new\": \"Downloader start to run\"}";
-  char * fail = "{ \"DLC pkg new\": \"Donwloader failed to run\"}";
-
   FILE *fp;
   struct bs_context * p_ctx = (struct bs_context *) param;
 
-  // TODO: memeset g_cmd_buf to zero and check the length of url and dlc_path
-  strcpy(p_ctx->cmd_buf, p_ctx->downloader);
-  strcat(p_ctx->cmd_buf, " ");
-  strcat(p_ctx->cmd_buf, p_ctx->pkg_url);    
-
-  if ((fp = popen(p_ctx->cmd_buf, "r")) != NULL) {
-//    mg_send(p_ctx->dmc, succ, strlen(succ));
-    (void) succ;
-  } else {
-//    mg_send(p_ctx->dmc, fail, strlen(fail));
-    (void) fail;
-    return NULL;
-  }
-
   LOG_PRINT(IDCM_LOG_LEVEL_INFO,"TLC downloading: curl start downling!\n");
-  while (!p_ctx->downloader_thread_exit &&
-         fgets(p_ctx->cmd_output, 1024, fp) != NULL) {
-    // block until has lock
-    if (!wait_stat_unlocked(10000))
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"TLC downloading: lock timeout in curl downling!\n"); 
-   // TODO: need better way to check successful downloading  
-  }
-  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"TLC downloading: curl finished downloading!\n");
+  if (strcmp(p_ctx->cur_manifest.dev_id, "WPC") == 0) {
+    // TODO: memeset g_cmd_buf to zero and check the length of url and dlc_path
+    strcpy(p_ctx->cmd_buf, p_ctx->downloader);
+    strcat(p_ctx->cmd_buf, " ");
+    strcat(p_ctx->cmd_buf, p_ctx->pkg_url);    
 
-  // block until has lock
-  if (!wait_stat_unlocked(1000))
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"TLC downloading: lock timeout!\n");
+    if ((fp = popen(p_ctx->cmd_buf, "r")) == NULL) {
+      return NULL;
+    }
+    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
+  } else {
+    // TODO: read from L1 Manifest
+    if ((fp = popen("curl --output /share/vdcm1_1.0.0 http://hhfotatest.bosch-mobility-solutions.cn/cdn/fota/v1/package/download/mcu_SH0105A2T1.hex", "r")) == NULL) {
+      return NULL;
+    }
+    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
+    if ((fp = popen("curl --output /share/vdcm2_1.0.0 http://hhfotatest.bosch-mobility-solutions.cn/cdn/fota/v1/package/download/xcu8.0_app_hh.bin.zip", "r")) == NULL) {
+      return NULL;
+    }
+    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
+    if ((fp = popen("curl --output /share/vdcm3_1.0.0 http://hhfotatest.bosch-mobility-solutions.cn/cdn/fota/v1/package/download/xcu8.0_kernel_v1.1.2.bins", "r")) == NULL) {
+      return NULL;
+    }
+    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
+    if ((fp = popen("curl --output /share/vdcm4_1.0.0 http://hhfotatest.bosch-mobility-solutions.cn/cdn/fota/v1/package/download/xcu8.0_rootfs_hh.bin.zip", "r")) == NULL) {
+      return NULL;
+    }
+    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
+  }
+
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"TLC downloading: curl finished downloading!\n");
 
   g_stat_lock = 1;
   if (pclose(fp) == 0) {
@@ -689,23 +695,82 @@ static int dmc_msg_parse(const char *json) {
   unsigned char next_stat = STAT_INVALID;
   struct cJSON * root = NULL;
   struct cJSON * iterator = NULL;
+  struct cJSON * ecu = NULL;
+  struct cJSON * res = NULL;
+  struct cJSON * url = NULL;
 
   // parse L1 Menifest
   root = cJSON_Parse(json);
   if (root == NULL) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "---wrong json----\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "------------------------\n");
     return next_stat;
   }
 
-  iterator = find_json_child(root, "fotaCertUrl");
+  iterator = find_json_child(root, "manifest");
   if (iterator == NULL) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "---wrong L1 manifest----\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "------------------------\n");
     return next_stat;
   }
-  // save downloading url. TODO: in parallel downloaing
-  strcpy(g_ctx.cur_manifest.pkg_cdn_url, iterator->valuestring);
-  g_ctx.pkg_url = g_ctx.cur_manifest.pkg_cdn_url;
-  // TODO: parse out each part
-  // parse devid 
-  strcpy(g_ctx.cur_manifest.dev_id, "VDCM");  
+
+  iterator = find_json_child(iterator, "packages");
+  if (iterator == NULL) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "---wrong L1 manifest : packages----\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "------------------------\n");
+    return next_stat;
+  }
+
+  iterator = cJSON_GetArrayItem(iterator, 0);
+  if (iterator == NULL) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "---wrong L1 manifest : packages[{}]----\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "------------------------\n");
+    return next_stat;
+  }
+
+  ecu = cJSON_GetObjectItem(iterator, "ecu");
+  if (ecu == NULL || !cJSON_IsString(ecu)) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "---wrong L1 manifest : packages[{\"ecu\":}]----\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"------------------------\n");
+    return next_stat;
+  }
+
+  res = cJSON_GetObjectItem(iterator, "resources");
+  if (res == NULL) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"---wrong L1 manifest : packages[{\"resources\":}]----\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "------------------------\n");
+    return next_stat;
+  }
+
+  url = cJSON_GetObjectItem(res, "fullDownloadUrl");
+  if (url == NULL || !cJSON_IsString(url)) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "---wrong L1 manifest : packages[{\"fullDownloadUrl\":}]----\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "------------------------\n");
+    return next_stat;
+  }
+
+  if (strcmp(ecu->valuestring, "WPC") == 0 ) {
+    // save downloading url. TODO: parse urls from L1, and in parallel downloaing
+    strcpy(g_ctx.cur_manifest.pkg_cdn_url, url->valuestring);
+    g_ctx.pkg_url = g_ctx.cur_manifest.pkg_cdn_url;
+    // TODO: parse out each part
+    // parse devid 
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parsed: %s\n", url->valuestring);
+    strcpy(g_ctx.cur_manifest.dev_id, "WPC");
+  } else {
+    //strcpy(g_ctx.cur_manifest.pkg_cdn_url, iterator->valuestring);
+    g_ctx.pkg_url = "";// TODO: remove hard code
+    // TODO: parse out each part
+    // parse devid 
+    strcpy(g_ctx.cur_manifest.dev_id, "VDCM");
+  }
 
 //finish_parse:
   cJSON_Delete(root);
@@ -726,6 +791,15 @@ static void dmc_resp_inventory(struct mg_connection *nc)
   mg_send(nc, resp, len+4);
 }
 
+//-----test--
+//char * mani="{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"WPC\",\"deviceType\":\"can\",\"softwareId\":\"wpc\",\"softwareName\":\"wpc\",\"softwareChineseName\":\"\",\"softwareVersion\":\"1.0.0\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersions\":[\"version 1.0\"],\"dependencies\":[],\"flashSequence\":1,\"estimateUpgradeTime\":50,\"resources\":{\"fullLicense\":\"license code\",\"fullCertificateUrl\":\"certificate url\",\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"download url\",\"deltaLicense\":\"license code\",\"deltaCertificateUrl\":\"certificate url\",\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"},\"extendedAttributes\":[{\"extendedAttributeName\":\"attribute name 1\",\"extendedAttributesValue\":\"value\"},{\"extendedAttributeName\":\"attribute name 2\",\"extendedAttributesValue\":\"value\"}]}]}}";
+
+//char *mani_vdcm = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\u4e2d\u6587\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"VDCM\",\"deviceType\":\"eth\",\"softwareId\":\"id of software to upgrade\",\"softwareName\":\"english name of software to upgrade\",\"softwareChineseName\":\"chinese name of software to upgrade\",\"softwareVersion\":\"version id\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersion\":\"previous version id\",\"estimateUpgradeTime\":50,\"resources\":{\"fullSize\":12345,\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"download url\",\"deltaSize\":100,\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"}}]}}";
+
+
+//----------
+
+
 static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 {
   struct mbuf *io = &nc->recv_mbuf;
@@ -741,7 +815,9 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", g_stub_inventory);
       dmc_resp_inventory(nc);
 
-      cgw_msg_monitor_thread(cgw_msg_monitor_thread);
+      mg_start_thread(cgw_msg_monitor_thread, NULL);
+
+//      core_state_handler(dmc_msg_parse(mani_vdcm));// test entry
       break;
     case MG_EV_RECV:
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
@@ -765,7 +841,7 @@ static void * cgw_pkg_upload_thread(void *param) {
   struct bs_context *p_ctx = (struct bs_context *) param;
   FILE *fp;
   static char cmd[128];
-  char *curl = "curl -F 'data=@./wpc.1.0.0' ";
+  char *curl = "curl -F 'data=@/share/wpc.1.0.0' ";
   int i;
 
   (void) param;
@@ -796,7 +872,7 @@ static void * cgw_pkg_upload_thread(void *param) {
   return NULL;
 }
 
-static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data) {
+void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
   (void) hm;
 
@@ -810,8 +886,8 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
 
       // TODO: need to make sure it's selfinstaller
-      if (strcmp(g_ctx.cur_manifest.dev_id, "VDCM") == 0) {
-        g_stat = ORCH_TDR_RUN;// orchestrator dealwith selfinstaller
+      if (strcmp(g_ctx.cur_manifest.dev_id, "WPC") != 0) {
+        g_stat = ORCH_TDR_RUN;// orchestrator deal with selfinstaller
       } else {
         g_stat = ORCH_PKG_DOWNLOADING;
         mg_start_thread(cgw_pkg_upload_thread, (void *) &g_ctx);
@@ -831,7 +907,7 @@ static void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data)
   }
 }
 
-static void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data) {
+void cgw_handler_pkg_stat(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message *hm = (struct http_message *) ev_data;
 
   switch (ev) {
@@ -1125,7 +1201,7 @@ static void init_context() {
   memset(g_ctx.cur_manifest.dev_id, 0, 32);
   memset(g_ctx.cur_manifest.pkg_cdn_url, 0, 128);
   
-  g_ctx.downloader = "curl --output wpc.1.0.0"; 
+  g_ctx.downloader = "curl --output /share/wpc.1.0.0"; 
 //  g_ctx.downloader = "/data/duc/test_interface/dlc";
 
   // Change to FTPS
