@@ -762,14 +762,17 @@ static int dmc_msg_parse(const char *json) {
     g_ctx.pkg_url = g_ctx.cur_manifest.pkg_cdn_url;
     // TODO: parse out each part
     // parse devid 
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parsed: %s\n", url->valuestring);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parsed: WPC %s\n", url->valuestring);
     strcpy(g_ctx.cur_manifest.dev_id, "WPC");
+    next_stat = DLC_PKG_NEW;
   } else {
     //strcpy(g_ctx.cur_manifest.pkg_cdn_url, iterator->valuestring);
     g_ctx.pkg_url = "";// TODO: remove hard code
     // TODO: parse out each part
     // parse devid 
     strcpy(g_ctx.cur_manifest.dev_id, "VDCM");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parsed: VDCM %s\n", url->valuestring);
+    next_stat = DLC_PKG_NEW;
   }
 
 //finish_parse:
@@ -817,7 +820,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 
       mg_start_thread(cgw_msg_monitor_thread, NULL);
 
-//      core_state_handler(dmc_msg_parse(mani_vdcm));// test entry
+      //core_state_handler(dmc_msg_parse(mani_vdcm));// test entry
       break;
     case MG_EV_RECV:
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
