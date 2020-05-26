@@ -1178,17 +1178,17 @@ static void init_context() {
   g_ctx.cgw_api_pkg_stat.api = "http://127.0.0.1:8018/pkg/sta";
   g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_stat.fn = cgw_handler_pkg_stat;
-  g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_default;
+  g_ctx.cgw_api_pkg_stat.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_pkg_stat.nc = NULL;
   g_ctx.cgw_api_tdr_run.api = "http://127.0.0.1:8018/tdr/run";
   g_ctx.cgw_api_tdr_run.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_run.fn = cgw_handler_tdr_run;
-  g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_default;
+  g_ctx.cgw_api_tdr_run.payload_gener = cgw_api_payload_pkg_new;// TODO:use same of pkg_new is ok
   g_ctx.cgw_api_tdr_run.nc = NULL;
   g_ctx.cgw_api_tdr_stat.api = "http://127.0.0.1:8018/tdr/stat";
   g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_stat.fn = cgw_handler_tdr_stat;
-  g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_default;
+  g_ctx.cgw_api_tdr_stat.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_tdr_stat.nc = NULL;
   // TODO: so far use curl to upload
   g_ctx.cgw_api_pkg_upload.api = "http://127.0.0.1:8018/upload";
