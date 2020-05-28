@@ -786,17 +786,21 @@ static void dmc_resp_inventory(struct mg_connection *nc)
   unsigned int len = strlen(g_stub_inventory);
 
   strcpy(resp+4, g_stub_inventory);
-  resp[0] = (char) (len<< 24);
-  resp[1] = (char) (len<< 16);
-  resp[2] = (char) (len<< 8);
+  resp[0] = (char) (len >> 24);
+  resp[1] = (char) (len >> 16);
+  resp[2] = (char) (len >> 8);
   resp[3] = (char) (len);
+
+
+  printf("--- length to send: %d   \n", len);
+  printf("--- len in coding: %d %d %d %d \n", resp[0], resp[1], resp[2], resp[3]); 
 
   mg_send(nc, resp, len+4);
 }
 
 //-----test--
-//char * mani="{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"WPC\",\"deviceType\":\"can\",\"softwareId\":\"wpc\",\"softwareName\":\"wpc\",\"softwareChineseName\":\"\",\"softwareVersion\":\"1.0.0\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersions\":[\"version 1.0\"],\"dependencies\":[],\"flashSequence\":1,\"estimateUpgradeTime\":50,\"resources\":{\"fullLicense\":\"license code\",\"fullCertificateUrl\":\"certificate url\",\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"download url\",\"deltaLicense\":\"license code\",\"deltaCertificateUrl\":\"certificate url\",\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"},\"extendedAttributes\":[{\"extendedAttributeName\":\"attribute name 1\",\"extendedAttributesValue\":\"value\"},{\"extendedAttributeName\":\"attribute name 2\",\"extendedAttributesValue\":\"value\"}]}]}}";
-
+char * mani="{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"WPC\",\"deviceType\":\"can\",\"softwareId\":\"wpc\",\"softwareName\":\"wpc\",\"softwareChineseName\":\"\",\"softwareVersion\":\"1.0.0\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersions\":[\"version 1.0\"],\"dependencies\":[],\"flashSequence\":1,\"estimateUpgradeTime\":50,\"resources\":{\"fullLicense\":\"license code\",\"fullCertificateUrl\":\"certificate url\",\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"http://hhfotatest.bosch-mobility-solutions.cn/wpc/package/1.0/wpc.zip\",\"deltaLicense\":\"license code\",\"deltaCertificateUrl\":\"certificate url\",\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"},\"extendedAttributes\":[{\"extendedAttributeName\":\"attribute name 1\",\"extendedAttributesValue\":\"value\"},{\"extendedAttributeName\":\"attribute name 2\",\"extendedAttributesValue\":\"value\"}]}]}}";
+//http://hhfotatest.bosch-mobility-solutions.cn/wpc/package/1.0/wpc.zip
 //char *mani_vdcm = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\u4e2d\u6587\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"VDCM\",\"deviceType\":\"eth\",\"softwareId\":\"id of software to upgrade\",\"softwareName\":\"english name of software to upgrade\",\"softwareChineseName\":\"chinese name of software to upgrade\",\"softwareVersion\":\"version id\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersion\":\"previous version id\",\"estimateUpgradeTime\":50,\"resources\":{\"fullSize\":12345,\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"download url\",\"deltaSize\":100,\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"}}]}}";
 
 
@@ -820,7 +824,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 
       mg_start_thread(cgw_msg_monitor_thread, NULL);
 
-      //core_state_handler(dmc_msg_parse(mani_vdcm));// test entry
+      core_state_handler(dmc_msg_parse(mani));// test entry
       break;
     case MG_EV_RECV:
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
@@ -1170,31 +1174,30 @@ static void init_context() {
   init_hmi_objs(&g_ctx);
 
   // CGW http API
-  g_ctx.cgw_api_pkg_new.api = "http://127.0.0.1:8018/pkg/new";
+  g_ctx.cgw_api_pkg_new.api = "http://192.168.0.2:8018/pkg/new";
   g_ctx.cgw_api_pkg_new.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
   g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_pkg_new;
   g_ctx.cgw_api_pkg_new.nc = NULL;
-  g_ctx.cgw_api_pkg_stat.api = "http://127.0.0.1:8018/pkg/sta";
+  g_ctx.cgw_api_pkg_stat.api = "http://192.168.0.2:8018/pkg/sta";
   g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_stat.fn = cgw_handler_pkg_stat;
   g_ctx.cgw_api_pkg_stat.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_pkg_stat.nc = NULL;
-  g_ctx.cgw_api_tdr_run.api = "http://127.0.0.1:8018/tdr/run";
+  g_ctx.cgw_api_tdr_run.api = "http://192.168.0.2:8018/tdr/run";
   g_ctx.cgw_api_tdr_run.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_run.fn = cgw_handler_tdr_run;
   g_ctx.cgw_api_tdr_run.payload_gener = cgw_api_payload_pkg_new;// TODO:use same of pkg_new is ok
   g_ctx.cgw_api_tdr_run.nc = NULL;
-  g_ctx.cgw_api_tdr_stat.api = "http://127.0.0.1:8018/tdr/stat";
+  g_ctx.cgw_api_tdr_stat.api = "http://192.168.0.2:8018/tdr/stat";
   g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_stat.fn = cgw_handler_tdr_stat;
   g_ctx.cgw_api_tdr_stat.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_tdr_stat.nc = NULL;
   // TODO: so far use curl to upload
-  g_ctx.cgw_api_pkg_upload.api = "http://127.0.0.1:8018/upload";
+  g_ctx.cgw_api_pkg_upload.api = "http://192.168.0.2:8018/upload";
   g_ctx.cgw_api_pkg_upload.fn = NULL;
   g_ctx.cgw_api_pkg_upload.nc = NULL;
-  g_ctx.cgw_api_pkg_new.payload_gener = NULL;
 
   g_ctx.cmd_buf = g_cmd_buf;
   g_ctx.cmd_output = g_cmd_output;
