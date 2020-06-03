@@ -154,7 +154,9 @@ static void cgw_monitor_handle_status(struct mg_connection *nc, int ev, void *ev
     LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-------------Send status report to DMC-------\n"); 
     LOG_PRINT(IDCM_LOG_LEVEL_INFO," %s\n", resp+4); 
     LOG_PRINT(IDCM_LOG_LEVEL_INFO,"---------------------------------------------\n"); 
-    mg_send(g_ctx.dmc, resp, len+4);
+    if (g_ctx.dmc) {
+      mg_send(g_ctx.dmc, resp, len+4);
+    }
   }
 }
 
@@ -642,19 +644,19 @@ static void * dmc_downloader_thread(void * param) {
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
   } else {
     // TODO: read from L1 Manifest
-    if ((fp = popen("curl --output /share/vdcm1_1.0.0 http://hhfotatest.bosch-mobility-solutions.cn/cdn/fota/v1/package/download/mcu_SH0105A2T1.hex", "r")) == NULL) {
+    if ((fp = popen("curl --output /share/vdcm1_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/mcu_SH0105A2T1.hex", "r")) == NULL) {
       return NULL;
     }
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm2_1.0.0 http://hhfotatest.bosch-mobility-solutions.cn/cdn/fota/v1/package/download/xcu8.0_app_hh.bin.zip", "r")) == NULL) {
+    if ((fp = popen("curl --output /share/vdcm2_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_app_hh.bin.zip", "r")) == NULL) {
       return NULL;
     }
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm3_1.0.0 http://hhfotatest.bosch-mobility-solutions.cn/cdn/fota/v1/package/download/xcu8.0_kernel_v1.1.2.bins", "r")) == NULL) {
+    if ((fp = popen("curl --output /share/vdcm3_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_kernel_v1.1.2.bins", "r")) == NULL) {
       return NULL;
     }
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm4_1.0.0 http://hhfotatest.bosch-mobility-solutions.cn/cdn/fota/v1/package/download/xcu8.0_rootfs_hh.bin.zip", "r")) == NULL) {
+    if ((fp = popen("curl --output /share/vdcm4_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_rootfs_hh.bin.zip", "r")) == NULL) {
       return NULL;
     }
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
@@ -799,9 +801,9 @@ static void dmc_resp_inventory(struct mg_connection *nc)
 }
 
 //-----test--
-char * mani="{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"WPC\",\"deviceType\":\"can\",\"softwareId\":\"wpc\",\"softwareName\":\"wpc\",\"softwareChineseName\":\"\",\"softwareVersion\":\"1.0.0\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersions\":[\"version 1.0\"],\"dependencies\":[],\"flashSequence\":1,\"estimateUpgradeTime\":50,\"resources\":{\"fullLicense\":\"license code\",\"fullCertificateUrl\":\"certificate url\",\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"http://hhfotatest.bosch-mobility-solutions.cn/wpc/package/1.0/wpc.zip\",\"deltaLicense\":\"license code\",\"deltaCertificateUrl\":\"certificate url\",\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"},\"extendedAttributes\":[{\"extendedAttributeName\":\"attribute name 1\",\"extendedAttributesValue\":\"value\"},{\"extendedAttributeName\":\"attribute name 2\",\"extendedAttributesValue\":\"value\"}]}]}}";
+//char * mani="{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"WPC\",\"deviceType\":\"can\",\"softwareId\":\"wpc\",\"softwareName\":\"wpc\",\"softwareChineseName\":\"\",\"softwareVersion\":\"1.0.0\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersions\":[\"version 1.0\"],\"dependencies\":[],\"flashSequence\":1,\"estimateUpgradeTime\":50,\"resources\":{\"fullLicense\":\"license code\",\"fullCertificateUrl\":\"certificate url\",\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"http://hhfota-q.bosch-mobility-solutions.cn/wpc/package/1.0/wpc.zip\",\"deltaLicense\":\"license code\",\"deltaCertificateUrl\":\"certificate url\",\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"},\"extendedAttributes\":[{\"extendedAttributeName\":\"attribute name 1\",\"extendedAttributesValue\":\"value\"},{\"extendedAttributeName\":\"attribute name 2\",\"extendedAttributesValue\":\"value\"}]}]}}";
 //http://hhfotatest.bosch-mobility-solutions.cn/wpc/package/1.0/wpc.zip
-//char *mani_vdcm = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\u4e2d\u6587\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"VDCM\",\"deviceType\":\"eth\",\"softwareId\":\"id of software to upgrade\",\"softwareName\":\"english name of software to upgrade\",\"softwareChineseName\":\"chinese name of software to upgrade\",\"softwareVersion\":\"version id\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersion\":\"previous version id\",\"estimateUpgradeTime\":50,\"resources\":{\"fullSize\":12345,\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"download url\",\"deltaSize\":100,\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"}}]}}";
+char *mani_vdcm = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"VDCM\",\"deviceType\":\"eth\",\"softwareId\":\"id of software to upgrade\",\"softwareName\":\"english name of software to upgrade\",\"softwareChineseName\":\"chinese name of software to upgrade\",\"softwareVersion\":\"version id\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersion\":\"previous version id\",\"estimateUpgradeTime\":50,\"resources\":{\"fullSize\":12345,\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"download url\",\"deltaSize\":100,\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"}}]}}";
 
 
 //----------
@@ -824,7 +826,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 
       mg_start_thread(cgw_msg_monitor_thread, NULL);
 
-      core_state_handler(dmc_msg_parse(mani));// test entry
+      core_state_handler(dmc_msg_parse(mani_vdcm));// test entry
       break;
     case MG_EV_RECV:
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
@@ -1216,6 +1218,13 @@ static void init_context() {
 
 int main(int argc, char *argv[]) {
   struct mg_mgr mgr;
+
+  if (argc >= 2 && strcmp(argv[1], "-v") == 0) {
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "====== DLC =========");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "  Version: 1.0.0.0");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "====================");
+    return 0;
+  }
 
   init_context();
 
