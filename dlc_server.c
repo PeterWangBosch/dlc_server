@@ -12,7 +12,7 @@
 static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
 
-static char * g_stub_inventory = "\"certificate\":\"xxxxxxx\",\"payload\":{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.1.0.0\",\"dlc\":\"0.1.0.0\"},\"inventory\":[{\"ecu\":\"WPC\",\"softwareList\":[{\"softwareId\":\"WPC1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"unknown\",\"campaign\":\"unknown\"}]},{\"ecu\":\"VDCM1\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM2\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM3\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM4\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]}}";
+static char * g_stub_inventory = "{\"messageType\":\"xxxxxxx\",\"correlationId\":\"xxxxxxx\",\"payload\":{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.1.0.0\",\"dlc\":\"0.1.0.0\"},\"inventory\":[{\"ecu\":\"WPC\",\"softwareList\":[{\"softwareId\":\"WPC1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"unknown\",\"campaign\":\"unknown\"}]},{\"ecu\":\"VDCM1\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM2\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM3\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM4\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]}]}}";
 
 /**
  * CGW API Handler
@@ -821,6 +821,8 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 //      dmc_tftp_run(&g_ctx);
       hmi_thread_run(&g_ctx);
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"DMC Socket Wrapper connected!\n");
+      //TODO: report from orchestrator
+      sleep(10);
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", g_stub_inventory);
       dmc_resp_inventory(nc);
 
