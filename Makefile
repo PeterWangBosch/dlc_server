@@ -1,7 +1,7 @@
 PROG = dlc_server
 MODULE_CFLAGS=-DMG_ENABLE_THREADS -DMG_ENABLE_HTTP_WEBSOCKET=0
 
-CJSON_SRCS = cJSON/cJSON.c cJSON/cJSON_Utils.c
+CJSON_SRCS = cJSON/cJSON.c cJSON/cJSON_Utils.c bs_dlc_utils.c
 
 SOURCES = $(PROG).c mongoose/mongoose.c $(CJSON_SRCS)
 CFLAGS = -g -W -Wall -Werror -I../.. -Wno-unused-function $(CFLAGS_EXTRA) $(MODULE_CFLAGS)

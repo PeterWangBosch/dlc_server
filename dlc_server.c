@@ -4,6 +4,7 @@
  */
 
 #include "stdio.h"
+#include "bs_dlc_utils.h"
 #include "cJSON/cJSON.h"
 #include "log/idcm_log.h"
 #include "mongoose/mongoose.h"
