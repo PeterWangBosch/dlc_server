@@ -137,7 +137,7 @@ static void unlock() {
 // -------------------------------------------------------------------
 static void cgw_monitor_handle_status(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message * hm = (struct http_message *) ev_data;
-  static char resp[1024];
+  static char resp[2048];
   unsigned int len = 0;
   (void) nc;
   (void) ev;
@@ -148,9 +148,9 @@ static void cgw_monitor_handle_status(struct mg_connection *nc, int ev, void *ev
     LOG_PRINT(IDCM_LOG_LEVEL_INFO,"---------------------------------------------\n"); 
     len = strlen(hm->body.p);
     strcpy(resp+4, hm->body.p);
-    resp[0] = (char) (len<< 24); 
-    resp[1] = (char) (len<< 16); 
-    resp[2] = (char) (len<< 8);
+    resp[0] = (char) (len>> 24); 
+    resp[1] = (char) (len>> 16); 
+    resp[2] = (char) (len>> 8);
     resp[3] = (char) (len);
     LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-------------Send status report to DMC-------\n"); 
     LOG_PRINT(IDCM_LOG_LEVEL_INFO," %s\n", resp+4); 
@@ -188,7 +188,8 @@ static void * cgw_msg_monitor_thread(void *param) {
             *bind_opts.error_string);
     exit(1);
   }
-
+  fprintf(stderr, "Succ starting server on port %s: %s\n", "8019",
+            *bind_opts.error_string);
   // Register endpoints
   mg_register_http_endpoint(nc, "/status", cgw_monitor_handle_status MG_UD_ARG(NULL));
   // Set up HTTP server parameters
@@ -785,7 +786,7 @@ static int dmc_msg_parse(const char *json) {
 
 static void dmc_resp_inventory(struct mg_connection *nc)
 {
-  static char resp[512];
+  static char resp[1024];
   unsigned int len = strlen(g_stub_inventory);
 
   strcpy(resp+4, g_stub_inventory);
@@ -829,7 +830,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 
       mg_start_thread(cgw_msg_monitor_thread, NULL);
 
-      core_state_handler(dmc_msg_parse(mani_vdcm));// test entry
+      //core_state_handler(dmc_msg_parse(mani_vdcm));// test entry
       break;
     case MG_EV_RECV:
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
@@ -846,7 +847,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
         core_state_handler(dmc_msg_parse(mani_vdcm));
       }
 
-      core_state_handler(dmc_msg_parse(io->buf+4));
+      //core_state_handler(dmc_msg_parse(io->buf+4));
       mbuf_remove(io, io->len);       // Discard message from recv buffer
       break;
     default:
@@ -1030,7 +1031,7 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
   // TODO: move to hmi thread
   int resp_len = 0;
   static char response[512];
-
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"1Request Orchestrator tdr stat: response: %s\n", hm->body.p);
   switch (ev) {
     case MG_EV_CONNECT:
       g_ctx.cgw_api_tdr_stat.nc = nc;
