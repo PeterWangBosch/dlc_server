@@ -847,6 +847,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
         core_state_handler(dmc_msg_parse(mani_vdcm));
       }
 
+      // TODO: when the L1 Menifest become stable, use this path
       //core_state_handler(dmc_msg_parse(io->buf+4));
       mbuf_remove(io, io->len);       // Discard message from recv buffer
       break;
