@@ -13,8 +13,8 @@ int bs_parse_l1_manifest(const char* json_txt, bs_l1_manifest_t* l1_mani)
     assert(l1_mani);
 
     LOG_PRINT(IDCM_LOG_LEVEL_INFO, "--- parse l1_manifest enter -----\n");
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json_txt);
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "---------------------------------\n");
+    //LOG_PRINT(IDCM_LOG_LEVEL_INFO, "%s", json_txt);
+    //LOG_PRINT(IDCM_LOG_LEVEL_INFO, "---------------------------------\n");
 
     int rc = JCFG_ERR_OK;
     memset(l1_mani, 0, sizeof(bs_l1_manifest_t));
@@ -125,13 +125,14 @@ int bs_parse_l1_manifest(const char* json_txt, bs_l1_manifest_t* l1_mani)
         l1_mani->pkg_num++;
 
     }//foreach pkg in packages
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
-        "--- parse l1_manifest success----\n"
-        "---------------------------------\n");
 
 DONE:
     if (root)
         cJSON_Delete(root);
+
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO,
+        "--- parse l1_manifest %s----\n"
+        "---------------------------------\n", JCFG_ERR_OK==rc ? "succ" : "fail");
 
     return (rc);
 }

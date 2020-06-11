@@ -93,6 +93,7 @@ struct bs_context {
   struct mg_connection * hmi;
   unsigned char downloader_thread_exit;
   unsigned char hmi_thread_exit;
+  struct bs_cgw_api_handler cgw_api_l1_mani_new;
   struct bs_cgw_api_handler cgw_api_pkg_new;
   struct bs_cgw_api_handler cgw_api_pkg_stat;
   struct bs_cgw_api_handler cgw_api_tdr_run;
@@ -110,7 +111,11 @@ struct bs_context {
   void * data;
 };
 struct bs_context g_ctx;
+bs_l1_manifest_t g_l1_mani;
+static char g_l1_mani_txt[4096];
+
 static void core_state_handler(unsigned char);
+static void* cgw_msg_thread(void* param);
 
 // Block thread until g_stat unlocked or time out.
 static int wait_stat_unlocked(unsigned int timeout) {
@@ -163,7 +168,7 @@ static void cgw_monitor_handle_status(struct mg_connection *nc, int ev, void *ev
 
 static struct mg_serve_http_opts s_http_server_opts;
 
-static void ev_handler(struct mg_connection *nc, int ev, void *ev_data) {
+static void cgw_msg_handler(struct mg_connection *nc, int ev, void *ev_data) {
   if (ev == MG_EV_HTTP_REQUEST) {
     mg_serve_http(nc, ev_data, s_http_server_opts);
   }
@@ -182,7 +187,7 @@ static void * cgw_msg_monitor_thread(void *param) {
   memset(&bind_opts, 0, sizeof(bind_opts));
   bind_opts.error_string = &err_str;
 
-  nc = mg_bind_opt(&mgr, "8019", ev_handler, bind_opts);
+  nc = mg_bind_opt(&mgr, "8019", cgw_msg_handler, bind_opts);
   if (nc == NULL) {
     fprintf(stderr, "Error starting server on port %s: %s\n", "8019",
             *bind_opts.error_string);
@@ -628,50 +633,50 @@ static int dmc_downloader_stat(struct bs_context * p_ctx) {
   return g_stat;
 }
 
+static const char* pick_file_name(const char* file_path)
+{
+    int siz = (int)strlen(file_path);
+    for (int i = siz - 1; i >= 0; --i)
+    {
+        if (file_path[i] == '/') {
+            return (&file_path[i + 1]);
+        }
+    }
+
+    return (file_path);
+}
+
 static void * dmc_downloader_thread(void * param) {
-  FILE *fp;
-  struct bs_context * p_ctx = (struct bs_context *) param;
 
-  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"TLC downloading: curl start downling!\n");
-  if (strcmp(p_ctx->cur_manifest.dev_id, "WPC") == 0) {
-    // TODO: memeset g_cmd_buf to zero and check the length of url and dlc_path
-    strcpy(p_ctx->cmd_buf, p_ctx->downloader);
-    strcat(p_ctx->cmd_buf, " ");
-    strcat(p_ctx->cmd_buf, p_ctx->pkg_url);    
+    (void)param;
 
-    if ((fp = popen(p_ctx->cmd_buf, "r")) == NULL) {
-      return NULL;
-    }
-    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-  } else {
-    // TODO: read from L1 Manifest
-    if ((fp = popen("curl --output /share/vdcm1_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/mcu_SH0105A2T1.hex", "r")) == NULL) {
-      return NULL;
-    }
-    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm2_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_app_hh.bin.zip", "r")) == NULL) {
-      return NULL;
-    }
-    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm3_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_kernel_v1.1.2.bins", "r")) == NULL) {
-      return NULL;
-    }
-    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm4_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_rootfs_hh.bin.zip", "r")) == NULL) {
-      return NULL;
-    }
-    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-  }
+    FILE* fp;
+    char cmd_buf[1024] = { 0 };
+    char cmd_out[1024] = { 0 };
+    for (int i = 0; i < g_l1_mani.pkg_num; ++i) {
 
-  LOG_PRINT(IDCM_LOG_LEVEL_INFO,"TLC downloading: curl finished downloading!\n");
+        bs_l1_manifest_pkg_t* pkg = &g_l1_mani.packages[i];
 
-  g_stat_lock = 1;
-  if (pclose(fp) == 0) {
-    core_state_handler(DLC_PKG_READY);
-  }
-  g_stat_lock = 0;
+        snprintf(cmd_buf, sizeof(cmd_buf) - 1, "curl -o /share/%s  %s", pick_file_name(pkg->pkg_url), pkg->pkg_url);
+        fwrite(cmd_buf, 1, strlen(cmd_buf), stdout);
 
-  return NULL;
+        if ((fp = popen(cmd_buf, "r")) == NULL) {
+            return NULL;
+        }
+        while (fgets(cmd_out, sizeof(cmd_out), fp) != NULL) {
+            fwrite(cmd_out, 1, strlen(cmd_out), stdout);
+        }
+        fprintf(stdout, "\n\n");
+    }
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "TLC downloading: curl finished downloading!\n");
+
+    //g_stat_lock = 1;
+    //if (pclose(fp) == 0) {
+    //  core_state_handler(DLC_PKG_READY);
+    //}
+    //g_stat_lock = 0;
+
+    return NULL;
 }
 
 static int dmc_downloader_run(struct bs_context * p_ctx) {
@@ -814,41 +819,56 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 {
   struct mbuf *io = &nc->recv_mbuf;
   unsigned int len = 0;
-  (void) p;
+  unsigned char* ubuf = (unsigned char*)(io->buf);
+  
+  (void)p;
 
   switch (ev) {
     case MG_EV_ACCEPT:
       g_ctx.dmc = nc;
-//      dmc_tftp_run(&g_ctx);
-      hmi_thread_run(&g_ctx);
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"DMC Socket Wrapper connected!\n");
-      //TODO: report from orchestrator
-      sleep(10);
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", g_stub_inventory);
       dmc_resp_inventory(nc);
 
-      mg_start_thread(cgw_msg_monitor_thread, NULL);
-
-      core_state_handler(dmc_msg_parse(mani_vdcm));// test entry
       break;
     case MG_EV_RECV:
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"%s \n", &(io->buf[4]));
+      //LOG_PRINT(IDCM_LOG_LEVEL_INFO,"%s \n", &(io->buf[4]));
       // first 4 bytes for length
-      len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);   
-      //TODO: parse JSON
-      (void) len;
-      if (strstr(io->buf+4, "fotaProtocolVersion")!=NULL && strstr(io->buf+4, "WPC")!=NULL) {
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Going to Flush WPC ----\n");
-        core_state_handler(dmc_msg_parse(mani));
-      } else if (strstr(io->buf+4, "fotaProtocolVersion")!=NULL && strstr(io->buf+4, "VDCM")!=NULL) {
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Going to Flush VSCM----\n");
-        core_state_handler(dmc_msg_parse(mani_vdcm));
+      len = ((unsigned)ubuf[3]) + ((unsigned)ubuf[2] << 8) + 
+          ((unsigned)ubuf[1] << 16) + ((unsigned)ubuf[0] << 24);
+
+      if (io->len >= len + 4) {
+          char sav_c = io->buf[len + 4];
+          io->buf[len + 4] = '\0';
+
+          bs_l1_manifest_t mani = { 0 };
+          if (JCFG_ERR_OK == bs_parse_l1_manifest(io->buf + 4, &mani)) {
+              LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parse dmc_l1_manifest success\n");
+
+              //deliver l1_manifest document to cgw
+              memset(g_l1_mani_txt, 0, sizeof(g_l1_mani_txt));
+              memcpy(g_l1_mani_txt, io->buf + 4, len);
+              mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_l1_mani_new));
+
+              //drive dlc core_state 
+              if (STAT_IDLE == g_stat) {
+                  memcpy(&g_l1_mani, &mani, sizeof(g_l1_mani));
+                  core_state_handler(DLC_PKG_NEW);
+              }
+              else {
+                  LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
+                      "dlc_core_stat != DLC_PKG_NEW, skip dlc_pkg_new event\n");
+              }
+              
+          }
+
+          io->buf[len + 4] = sav_c;
+          mbuf_remove(io, len + 4);
       }
 
-      core_state_handler(dmc_msg_parse(io->buf+4));
-      mbuf_remove(io, io->len);       // Discard message from recv buffer
       break;
+
     default:
       break;
   }
@@ -890,6 +910,31 @@ static void * cgw_pkg_upload_thread(void *param) {
   LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Uploading pkg to Orchestrator: uploading finished!\n");
 
   return NULL;
+}
+
+void cgw_handler_l1_mani_new(struct mg_connection* nc, int ev, void* ev_data) 
+{
+    struct http_message* hm = (struct http_message*)ev_data;
+    (void)hm;
+
+    switch (ev) {
+    case MG_EV_CONNECT:
+        g_ctx.cgw_api_l1_mani_new.nc = nc;
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request cgw l1_mani_new: connected\n");
+        break;
+    case MG_EV_HTTP_REPLY:
+        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+        g_ctx.cgw_api_l1_mani_new.cgw_thread_exit = 1;
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request cgw l1_mani_new: replied\n");
+        break;
+    case MG_EV_CLOSE:
+        g_ctx.cgw_api_l1_mani_new.nc = NULL;
+        g_ctx.cgw_api_pkg_new.cgw_thread_exit = 1;
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request cgw l1_mani_new: closed\n");
+        break;
+    default:
+        break;
+    }
 }
 
 void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data) {
@@ -1082,6 +1127,12 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
   }
 }
 
+static char* cgw_api_payload_l1_mani_new() {
+
+    return g_l1_mani_txt;
+}
+
+
 static char * cgw_api_payload_pkg_new() {
   // TODO: gen payload based on g_ctx
   static char buf[256];
@@ -1104,16 +1155,9 @@ static void * cgw_msg_thread(void *param) {
   mg_connect_http(&mgr, handler->fn, handler->api,
                   "Content-Type: application/json\r\n",
                   post_data);
-
+  printf("post json document to cgw:%d\n%s\n", (int)strlen(post_data), post_data);
   while (handler->cgw_thread_exit == 0) {
-    if (!wait_stat_unlocked(1000)) {
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"CGW Msg thread: lock timeout\n");
-    }
-
-    // run until one api request end
-    g_stat_lock = 1;
     mg_mgr_poll(&mgr, 500);
-    g_stat_lock = 0;
   }
 
   handler->cgw_thread_exit = 0;
@@ -1133,6 +1177,8 @@ static void core_state_handler(unsigned char reset) {
   if (reset != STAT_INVALID) { 
     g_stat = reset;
   }
+
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "DRV core stat = %d\n", g_stat);
 
   switch (g_stat) {
     case STAT_IDLE:
@@ -1173,11 +1219,16 @@ static void core_state_handler(unsigned char reset) {
     default:
       break;
   } 
+
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "DRV core stat -> %d\n", g_stat);
 }
 //---------------------------------------------------------------------------
 // Main
 //---------------------------------------------------------------------------
 static void init_context() {
+
+
+  g_stat = STAT_IDLE;
   g_ctx.dmc = NULL;
   g_ctx.hmi = NULL;
 
@@ -1187,6 +1238,11 @@ static void init_context() {
   init_hmi_objs(&g_ctx);
 
   // CGW http API
+  g_ctx.cgw_api_l1_mani_new.api = "http://10.0.2.15:8018/l1_mani/new";
+  g_ctx.cgw_api_l1_mani_new.cgw_thread_exit = 0;
+  g_ctx.cgw_api_l1_mani_new.fn = cgw_handler_l1_mani_new;
+  g_ctx.cgw_api_l1_mani_new.payload_gener = cgw_api_payload_l1_mani_new;
+  g_ctx.cgw_api_l1_mani_new.nc = NULL;
   g_ctx.cgw_api_pkg_new.api = "http://192.168.0.2:8018/pkg/new";
   g_ctx.cgw_api_pkg_new.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
@@ -1229,6 +1285,7 @@ static void init_context() {
 
 int main(int argc, char *argv[]) {
   struct mg_mgr mgr;
+  struct mg_connection* nc = NULL;
 
   if (argc >= 2 && strcmp(argv[1], "-v") == 0) {
     LOG_PRINT(IDCM_LOG_LEVEL_INFO, "====== DLC =========");
@@ -1242,25 +1299,20 @@ int main(int argc, char *argv[]) {
   mg_mgr_init(&mgr, NULL);
 
   LOG_PRINT(IDCM_LOG_LEVEL_INFO,"=== Start socket server ===\n");
-  if (argc >= 2 && strcmp(argv[1], "-o") == 0) {
-    // Listen to specidied port
-    mg_bind(&mgr, argv[2], dmc_msg_handler);
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Listen on port %s\n", argv[2]);
-  } else {
-    // by default, listen to 3000
-    mg_bind(&mgr, "3000", dmc_msg_handler);
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Listen on port 3000\n");
-  }
+
+  mg_bind(&mgr, "3000", dmc_msg_handler);
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Listen on port 3000 for DMC msg\n");
+
+  mg_bind(&mgr, "3001", hmi_msg_handler);
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Listen on port 3001 for HMI msg\n");
+
+  nc = mg_bind(&mgr, "8019", cgw_msg_handler);
+  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Listen on port 8019 for CGW msg\n");
+  mg_register_http_endpoint(nc, "/status", cgw_monitor_handle_status MG_UD_ARG(NULL));
+  mg_set_protocol_http_websocket(nc);
 
   for (;;) {
-    if (g_stat_lock) {
-      sleep(1);
-      continue;
-    }
-
-    g_stat_lock = 1;
     mg_mgr_poll(&mgr, 1000);
-    g_stat_lock = 0;
   }
   mg_mgr_free(&mgr);
 

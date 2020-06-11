@@ -28,10 +28,6 @@ typedef enum bs_dev_type_e {
 #define BS_PKG_CHK_SUM_LEN  32
 #define BS_MAX_PKG_URL_LEN  128
 //
-#define BS_CFG_MAX_APP_TXT_LEN 2048
-typedef struct bs_device_app bs_device_app_t;
-
-//
 typedef struct bs_l1_manifest_pkg_s {
     int dev_type;//bs_dev_type_e_t
     char dev_id[BS_MAX_DEV_ID_LEN + 1];
