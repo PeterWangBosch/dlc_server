@@ -8,6 +8,7 @@
 #include "cJSON/cJSON.h"
 #include "log/idcm_log.h"
 #include "mongoose/mongoose.h"
+#include "dlc_fsm.h"
 
 /* reserved buffer to save memory */
 static char g_cmd_buf[3096];
@@ -113,6 +114,7 @@ struct bs_context {
 struct bs_context g_ctx;
 bs_l1_manifest_t g_l1_mani;
 static char g_l1_mani_txt[4096];
+dlc_fsm_t g_fsm;
 
 static void core_state_handler(unsigned char);
 static void* cgw_msg_thread(void* param);
@@ -1171,12 +1173,12 @@ static void * cgw_msg_thread(void *param) {
 // Set g_stat_lock=1 before invoking this function, then reset it to 0
 //--------------------------------------------------------------------------- 
 
-static void core_state_handler(unsigned char reset) {
+static void core_state_handler(int new_stat) {
 
-  // force to reset
-  if (reset != STAT_INVALID) { 
-    g_stat = reset;
-  }
+    if (new_stat <= 0)
+        return;
+
+    g_stat = new_stat;
 
   LOG_PRINT(IDCM_LOG_LEVEL_INFO, "DRV core stat = %d\n", g_stat);
 
@@ -1295,6 +1297,7 @@ int main(int argc, char *argv[]) {
   }
 
   init_context();
+  dlc_fsm_init(&g_fsm, core_state_handler);
 
   mg_mgr_init(&mgr, NULL);
 
