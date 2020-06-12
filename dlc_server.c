@@ -13,7 +13,7 @@
 static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
 
-static char * g_stub_inventory = "{\"messageType\":\"xxxxxxx\",\"correlationId\":\"xxxxxxx\",\"payload\":{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.1.0.0\",\"dlc\":\"0.1.0.0\"},\"inventory\":[{\"ecu\":\"WPC\",\"softwareList\":[{\"softwareId\":\"WPC1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"unknown\",\"campaign\":\"unknown\"}]},{\"ecu\":\"VDCM1\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM2\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM3\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM4\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]}]}}";
+static char * g_stub_inventory = "{\"messageType\":\"xxxxxxx\",\"correlationId\":\"xxxxxxx\",\"payload\":{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.1.0.0\",\"dlc\":\"0.1.0.0\"},\"inventory\":[{\"ecu\":\"WPC\",\"softwareList\":[{\"softwareId\":\"WPC\",\"version\":\"WPC_App_V1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"unknown\",\"campaign\":\"unknown\"}]},{\"ecu\":\"Test_VDCM1\",\"softwareList\":[{\"softwareId\":\"Test_VDCM1\",\"version\":\"VDCM1_App_V1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"Test_VDCM2\",\"softwareList\":[{\"softwareId\":\"Test_VDCM2\",\"version\":\"VDCM2_App_V1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"Test_VDCM3\",\"softwareList\":[{\"softwareId\":\"Test_VDCM3\",\"version\":\"VDCM3_App_V1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"Test_VDCM4\",\"softwareList\":[{\"softwareId\":\"Test_VDCM4\",\"version\":\"VDCM4_App_V1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]}]}}";
 
 /**
  * CGW API Handler
@@ -184,12 +184,10 @@ static void * cgw_msg_monitor_thread(void *param) {
 
   nc = mg_bind_opt(&mgr, "8019", ev_handler, bind_opts);
   if (nc == NULL) {
-    fprintf(stderr, "Error starting server on port %s: %s\n", "8019",
-            *bind_opts.error_string);
+    fprintf(stderr, "Error starting server on port %s\n", "8019");
     exit(1);
   }
-  fprintf(stderr, "Succ starting server on port %s: %s\n", "8019",
-            *bind_opts.error_string);
+  fprintf(stderr, "Succ starting server on port %s\n", "8019");
   // Register endpoints
   mg_register_http_endpoint(nc, "/status", cgw_monitor_handle_status MG_UD_ARG(NULL));
   // Set up HTTP server parameters
