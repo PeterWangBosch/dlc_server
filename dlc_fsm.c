@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdbool.h>
 
 
@@ -27,14 +28,17 @@ static void* dlc_fsm_svc(void* ud)
         if (self->ev_rd == self->ev_wr)
             continue;
 
-        new_ev = &self->ev_q[self->ev_rd % DLC_FSM_EV_LIMIT];
+        new_ev = self->ev_q[self->ev_rd % DLC_FSM_EV_LIMIT];
         if (!self->run_flag)
             break;
 
+        fprintf(stdout, "INFO,DLC_FSM,drv event:%d@%lu\n", new_ev, self->ev_rd);
+
         self->ev_cb(new_ev);
-        __sync_sub_and_fetch(&self->ev_rd, 1);
+        __sync_add_and_fetch(&self->ev_rd, 1);
     }
 
+    fprintf(stdout, "INFO,DLC_FSM,svc finished\n");
     return (NULL);
 }
 
@@ -47,6 +51,7 @@ int dlc_fsm_init(dlc_fsm_t* self, ev_handler cb)
     self->ev_rd = 0;
     self->ev_wr = 0;
     self->ev_cb = cb;
+    self->run_flag = true;
 
     rc = efd_sem_init(&self->sem);
     if (rc) {
@@ -62,7 +67,7 @@ int dlc_fsm_init(dlc_fsm_t* self, ev_handler cb)
         goto DONE;
     }
 
-    fprintf(stderr, "INFO,DLC_FSM,fsm running\n", rc);
+    fprintf(stdout, "INFO,DLC_FSM,fsm running\n");
 DONE:
     return (rc);
 }
@@ -74,7 +79,7 @@ int dlc_fsm_fini(dlc_fsm_t* self)
     dlc_fsm_sign(self, -1);
     pthread_join(self->thr_id, NULL);
 
-    fprintf(stderr, "INFO,DLC_FSM,fsm stoped\n");
+    fprintf(stdout, "INFO,DLC_FSM,fsm stoped\n");
 
     return 0;
 }

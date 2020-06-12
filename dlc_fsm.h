@@ -6,9 +6,9 @@
 
 __BEGIN_DECLS
 
-typedef void (*ev_handler)(unsigned char);
+typedef void (*ev_handler)(int);
 
-#define DLC_FSM_EV_LIMIT 32
+#define DLC_FSM_EV_LIMIT 2
 typedef struct dlc_fsm {
 	int run_flag;
 	pthread_t thr_id;

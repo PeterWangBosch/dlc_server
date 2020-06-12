@@ -116,7 +116,7 @@ bs_l1_manifest_t g_l1_mani;
 static char g_l1_mani_txt[4096];
 dlc_fsm_t g_fsm;
 
-static void core_state_handler(unsigned char);
+static void core_state_handler(int);
 static void* cgw_msg_thread(void* param);
 
 // Block thread until g_stat unlocked or time out.
@@ -648,10 +648,8 @@ static const char* pick_file_name(const char* file_path)
     return (file_path);
 }
 
-static void * dmc_downloader_thread(void * param) {
-
-    (void)param;
-
+static int dlc_download_l1_manifest_all_package()
+{
     FILE* fp;
     char cmd_buf[1024] = { 0 };
     char cmd_out[1024] = { 0 };
@@ -663,7 +661,7 @@ static void * dmc_downloader_thread(void * param) {
         fwrite(cmd_buf, 1, strlen(cmd_buf), stdout);
 
         if ((fp = popen(cmd_buf, "r")) == NULL) {
-            return NULL;
+            return -1;
         }
         while (fgets(cmd_out, sizeof(cmd_out), fp) != NULL) {
             fwrite(cmd_out, 1, strlen(cmd_out), stdout);
@@ -671,6 +669,15 @@ static void * dmc_downloader_thread(void * param) {
         fprintf(stdout, "\n\n");
     }
     LOG_PRINT(IDCM_LOG_LEVEL_INFO, "TLC downloading: curl finished downloading!\n");
+
+    return (0);
+}
+
+static void * dmc_downloader_thread(void * param) {
+
+    (void)param;
+
+
 
     //g_stat_lock = 1;
     //if (pclose(fp) == 0) {
@@ -855,8 +862,8 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 
               //drive dlc core_state 
               if (STAT_IDLE == g_stat) {
-                  memcpy(&g_l1_mani, &mani, sizeof(g_l1_mani));
-                  core_state_handler(DLC_PKG_NEW);
+                  memcpy(&g_l1_mani, &mani, sizeof(g_l1_mani));                  
+                  dlc_fsm_sign(&g_fsm, DLC_PKG_NEW);
               }
               else {
                   LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
@@ -1180,49 +1187,53 @@ static void core_state_handler(int new_stat) {
 
     g_stat = new_stat;
 
-  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "DRV core stat = %d\n", g_stat);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "DRV core stat = %d\n", g_stat);
 
-  switch (g_stat) {
+    switch (g_stat) {
     case STAT_IDLE:
-      break;
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: STAT_IDLE\n");
+        break;
     case DLC_PKG_NEW:
-      // TODO: parse received JSON
-      dmc_downloader_run(&g_ctx);
-      g_stat = DLC_PKG_DOWNLOADING;
-      break;
-    case DLC_PKG_DOWNLOADING:
-      // TODO: verify checksum of downloaded pkg
-      break;
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: DLC_PKG_NEW\n");
+        if (0 == dlc_download_l1_manifest_all_package()) {
+            //dlc_fsm_sign(&g_fsm, DLC_PKG_READY);
+            //TMP:stop fsm chain
+            dlc_fsm_sign(&g_fsm, STAT_IDLE);
+        }
+        else {
+            dlc_fsm_sign(&g_fsm, STAT_IDLE);
+        }
+        break;
     case DLC_PKG_READY:
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Core stat: dlc pgk ready\n");
-      mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_pkg_new)); 
-      break;
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: DLC_PKG_READY\n");
+        mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_pkg_new));
+        break;
     case ORCH_CON_ERR:
-      break;
+        break;
     case ORCH_PKG_DOWNLOADING:
-      if (g_ctx.cgw_api_pkg_stat.nc == NULL)
-        mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_pkg_stat)); 
-      break;
+        if (g_ctx.cgw_api_pkg_stat.nc == NULL)
+            mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_pkg_stat));
+        break;
     case ORCH_PKG_BAD:
-      break;
+        break;
     case ORCH_PKG_READY:
-      mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_tdr_run)); 
-      break;
+        mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_tdr_run));
+        break;
     case ORCH_TDR_RUN:
-      // TODO: protect two instances running in parallel
-      mg_start_thread(cgw_msg_thread, (void *) &(g_ctx.cgw_api_tdr_stat)); 
-      break;
+        // TODO: protect two instances running in parallel
+        mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_tdr_stat));
+        break;
     case ORCH_TDR_FAIL:
-      //mg_send(g_ctx.dmc, "{\"result\":\"TDR run failed\"}\n", 31);
-      break;
+        //mg_send(g_ctx.dmc, "{\"result\":\"TDR run failed\"}\n", 31);
+        break;
     case ORCH_TDR_SUCC:
-      //mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\"}\n", 31);
-      break;
+        //mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\"}\n", 31);
+        break;
     default:
-      break;
-  } 
+        break;
+    }
 
-  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "DRV core stat -> %d\n", g_stat);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "DRV core stat -> %d\n", g_stat);
 }
 //---------------------------------------------------------------------------
 // Main
