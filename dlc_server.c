@@ -668,11 +668,14 @@ static int dlc_download_l1_manifest_packages()
         }
         while (fgets(cmd_out, sizeof(cmd_out), fp) != NULL) {
             fwrite(cmd_out, 1, strlen(cmd_out), stdout);
-            //TODO:check curl work result
+            if (strstr(cmd_out, "Failed")) {
+                LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "TLC downloading: curl work failed!\n");
+                return (-1);
+            }
         }
         fprintf(stdout, "\n\n");
     }
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "TLC downloading: curl finished downloading!\n");
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "TLC downloading: curl work success!\n");
 
     return (0);
 }
