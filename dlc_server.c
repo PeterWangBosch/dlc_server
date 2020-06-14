@@ -23,6 +23,7 @@ typedef char * (* api_payload_gener) ();
 struct bs_cgw_api_handler {
   bool cgw_thread_exit;
   char * api;
+  int cgw_api_rc;
   mg_event_handler_t fn;
   api_payload_gener payload_gener;
   struct mg_connection * nc;
@@ -106,15 +107,16 @@ struct bs_context {
   char * downloader;
   char * pkg_url;
   char * cmd_buf;
-  struct bs_l1_manifest cur_manifest;
+  //struct bs_l1_manifest cur_manifest;
   char * cmd_output;
   
   void * data;
+
+  bs_l1_manifest_t l1_mani;
+  char l1_mani_txt[1024*8];
+  dlc_fsm_t dlc_fsm;
 };
 struct bs_context g_ctx;
-bs_l1_manifest_t g_l1_mani;
-static char g_l1_mani_txt[4096];
-dlc_fsm_t g_fsm;
 
 static void core_state_handler(int);
 static void* cgw_msg_thread(void* param);
@@ -189,7 +191,7 @@ static void * cgw_msg_monitor_thread(void *param) {
   memset(&bind_opts, 0, sizeof(bind_opts));
   bind_opts.error_string = &err_str;
 
-  nc = mg_bind_opt(&mgr, "8019", cgw_msg_handler, bind_opts);
+  nc = mg_bind_opt(&mgr, "8019", cgw_msg_handler MG_UD_ARG(NULL), bind_opts);
   if (nc == NULL) {
     fprintf(stderr, "Error starting server on port %s: %s\n", "8019",
             *bind_opts.error_string);
@@ -592,7 +594,7 @@ static void * hmi_thread(void * param) {
 
   LOG_PRINT(IDCM_LOG_LEVEL_INFO,"===Start socket server for HMI ===\n");
     // by default, listen to 3001
-    mg_bind(&mgr, "3001", hmi_msg_handler);
+    mg_bind(&mgr, "3001", MG_CB(hmi_msg_handler, NULL));
     LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Listen on port 3001 for HMI Msg\n");
 
   while (!p_ctx->hmi_thread_exit) {
@@ -648,16 +650,17 @@ static const char* pick_file_name(const char* file_path)
     return (file_path);
 }
 
-static int dlc_download_l1_manifest_all_package()
+static int dlc_download_l1_manifest_packages()
 {
     FILE* fp;
     char cmd_buf[1024] = { 0 };
     char cmd_out[1024] = { 0 };
-    for (int i = 0; i < g_l1_mani.pkg_num; ++i) {
+    for (int i = 0; i < g_ctx.l1_mani.pkg_num; ++i) {
 
-        bs_l1_manifest_pkg_t* pkg = &g_l1_mani.packages[i];
+        bs_l1_manifest_pkg_t* pkg = &g_ctx.l1_mani.packages[i];
+        const char* pkg_name = pick_file_name(pkg->pkg_url);
 
-        snprintf(cmd_buf, sizeof(cmd_buf) - 1, "curl -o /share/%s  %s", pick_file_name(pkg->pkg_url), pkg->pkg_url);
+        snprintf(cmd_buf, sizeof(cmd_buf) - 1, "curl -o /share/%s  %s", pkg_name, pkg->pkg_url);
         fwrite(cmd_buf, 1, strlen(cmd_buf), stdout);
 
         if ((fp = popen(cmd_buf, "r")) == NULL) {
@@ -665,6 +668,7 @@ static int dlc_download_l1_manifest_all_package()
         }
         while (fgets(cmd_out, sizeof(cmd_out), fp) != NULL) {
             fwrite(cmd_out, 1, strlen(cmd_out), stdout);
+            //TODO:check curl work result
         }
         fprintf(stdout, "\n\n");
     }
@@ -773,24 +777,24 @@ static int dmc_msg_parse(const char *json) {
     return next_stat;
   }
 
-  if (strcmp(ecu->valuestring, "WPC") == 0 ) {
-    // save downloading url. TODO: parse urls from L1, and in parallel downloaing
-    strcpy(g_ctx.cur_manifest.pkg_cdn_url, url->valuestring);
-    g_ctx.pkg_url = g_ctx.cur_manifest.pkg_cdn_url;
-    // TODO: parse out each part
-    // parse devid 
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parsed: WPC %s\n", url->valuestring);
-    strcpy(g_ctx.cur_manifest.dev_id, "WPC");
-    next_stat = DLC_PKG_NEW;
-  } else {
-    //strcpy(g_ctx.cur_manifest.pkg_cdn_url, iterator->valuestring);
-    g_ctx.pkg_url = "";// TODO: remove hard code
-    // TODO: parse out each part
-    // parse devid 
-    strcpy(g_ctx.cur_manifest.dev_id, "VDCM");
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parsed: VDCM %s\n", url->valuestring);
-    next_stat = DLC_PKG_NEW;
-  }
+  //if (strcmp(ecu->valuestring, "WPC") == 0 ) {
+  //  // save downloading url. TODO: parse urls from L1, and in parallel downloaing
+  //  strcpy(g_ctx.cur_manifest.pkg_cdn_url, url->valuestring);
+  //  g_ctx.pkg_url = g_ctx.cur_manifest.pkg_cdn_url;
+  //  // TODO: parse out each part
+  //  // parse devid 
+  //  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parsed: WPC %s\n", url->valuestring);
+  //  strcpy(g_ctx.cur_manifest.dev_id, "WPC");
+  //  next_stat = DLC_PKG_NEW;
+  //} else {
+  //  //strcpy(g_ctx.cur_manifest.pkg_cdn_url, iterator->valuestring);
+  //  g_ctx.pkg_url = "";// TODO: remove hard code
+  //  // TODO: parse out each part
+  //  // parse devid 
+  //  strcpy(g_ctx.cur_manifest.dev_id, "VDCM");
+  //  LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parsed: VDCM %s\n", url->valuestring);
+  //  next_stat = DLC_PKG_NEW;
+  //}
 
 //finish_parse:
   cJSON_Delete(root);
@@ -826,6 +830,7 @@ char *mani_vdcm = "{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"roo
 
 static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 {
+  int rc = 0;
   struct mbuf *io = &nc->recv_mbuf;
   unsigned int len = 0;
   unsigned char* ubuf = (unsigned char*)(io->buf);
@@ -853,23 +858,28 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
 
           bs_l1_manifest_t mani = { 0 };
           if (JCFG_ERR_OK == bs_parse_l1_manifest(io->buf + 4, &mani)) {
-              LOG_PRINT(IDCM_LOG_LEVEL_INFO, "parse dmc_l1_manifest success\n");
+              LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Parse dmc_l1_manifest success\n");
 
-              //deliver l1_manifest document to cgw
-              memset(g_l1_mani_txt, 0, sizeof(g_l1_mani_txt));
-              memcpy(g_l1_mani_txt, io->buf + 4, len);
-              mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_l1_mani_new));
+              
+              //mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_l1_mani_new));
 
               //drive dlc core_state 
               if (STAT_IDLE == g_stat) {
-                  memcpy(&g_l1_mani, &mani, sizeof(g_l1_mani));                  
-                  dlc_fsm_sign(&g_fsm, DLC_PKG_NEW);
+
+                  //save l1_manifest document to local storage
+                  memset(g_ctx.l1_mani_txt, 0, sizeof(g_ctx.l1_mani_txt));
+                  memcpy(g_ctx.l1_mani_txt, io->buf + 4, len);
+
+                  memcpy(&g_ctx.l1_mani, &mani, sizeof(g_ctx.l1_mani));
+                  rc = dlc_fsm_sign(&g_ctx.dlc_fsm, DLC_PKG_NEW);
+                  if (rc) {
+                      LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "Signal DLC_PKG_NEW to dlc fsm failed:%d", rc);
+                  }
               }
               else {
                   LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
-                      "dlc_core_stat != DLC_PKG_NEW, skip dlc_pkg_new event\n");
-              }
-              
+                      "Skip DLC_PKG_NEW event for core stat != STAT_IDLE\n");
+              }              
           }
 
           io->buf[len + 4] = sav_c;
@@ -938,7 +948,7 @@ void cgw_handler_l1_mani_new(struct mg_connection* nc, int ev, void* ev_data)
         break;
     case MG_EV_CLOSE:
         g_ctx.cgw_api_l1_mani_new.nc = NULL;
-        g_ctx.cgw_api_pkg_new.cgw_thread_exit = 1;
+        g_ctx.cgw_api_l1_mani_new.cgw_thread_exit = 1;
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request cgw l1_mani_new: closed\n");
         break;
     default:
@@ -960,12 +970,12 @@ void cgw_handler_pkg_new(struct mg_connection *nc, int ev, void *ev_data) {
       //TODO: parse JSON, if error then g_stat = ORCH_NET_ERR;
 
       // TODO: need to make sure it's selfinstaller
-      if (strcmp(g_ctx.cur_manifest.dev_id, "WPC") != 0) {
-        g_stat = ORCH_TDR_RUN;// orchestrator deal with selfinstaller
-      } else {
-        g_stat = ORCH_PKG_DOWNLOADING;
-        mg_start_thread(cgw_pkg_upload_thread, (void *) &g_ctx);
-      }
+      //if (strcmp(g_ctx.cur_manifest.dev_id, "WPC") != 0) {
+      //  g_stat = ORCH_TDR_RUN;// orchestrator deal with selfinstaller
+      //} else {
+      //  g_stat = ORCH_PKG_DOWNLOADING;
+      //  mg_start_thread(cgw_pkg_upload_thread, (void *) &g_ctx);
+      //}
       nc->flags |= MG_F_CLOSE_IMMEDIATELY;
       g_ctx.cgw_api_pkg_new.cgw_thread_exit = 1;
       break;
@@ -1136,18 +1146,10 @@ static void cgw_handler_tdr_stat(struct mg_connection *nc, int ev, void *ev_data
   }
 }
 
-static char* cgw_api_payload_l1_mani_new() {
-
-    return g_l1_mani_txt;
-}
-
 
 static char * cgw_api_payload_pkg_new() {
-  // TODO: gen payload based on g_ctx
-  static char buf[256];
-  sprintf(buf, "{\"dev_id\":\"%s\",\"payload\":{\"url\":\"%s\"}}",
-          g_ctx.cur_manifest.dev_id, g_ctx.cur_manifest.pkg_cdn_url);
-  return buf;
+    return
+    g_ctx.l1_mani_txt;
 }
 
 static char * cgw_api_payload_default() {
@@ -1161,7 +1163,7 @@ static void * cgw_msg_thread(void *param) {
   char *post_data = handler->payload_gener();// TODO: the payload should be generated dynamically
 
   mg_mgr_init(&mgr, NULL);
-  mg_connect_http(&mgr, handler->fn, handler->api,
+  mg_connect_http(&mgr, MG_CB(handler->fn, NULL), handler->api,
                   "Content-Type: application/json\r\n",
                   post_data);
   printf("post json document to cgw:%d\n%s\n", (int)strlen(post_data), post_data);
@@ -1174,6 +1176,82 @@ static void * cgw_msg_thread(void *param) {
   return NULL;
 }
 
+void cgw_api_pkg_new_handler(struct mg_connection* nc, int ev, void* ev_data) 
+{
+    struct http_message* hm = (struct http_message*)ev_data;
+    (void)hm;
+
+    struct bs_cgw_api_handler* ctx = &g_ctx.cgw_api_pkg_new;
+
+    switch (ev) {
+    case MG_EV_CONNECT:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request Orchestrator pkg new: connected\n");
+        break;
+
+    case MG_EV_HTTP_REPLY:        
+        
+        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+        ctx->cgw_thread_exit = 1;
+        ctx->cgw_api_rc = 0;//TODO: parse JSON, if error then set error code;
+        break;
+
+    case MG_EV_TIMER:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request Orchestrator pkg new: timeout\n");
+        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+        ctx->cgw_thread_exit = 1;
+        ctx->cgw_api_rc = -1;
+        break;
+
+    case MG_EV_CLOSE:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request Orchestrator pkg new: closed\n");
+        ctx->cgw_thread_exit = 1;
+        break;
+
+    default:
+        break;
+    }
+}
+
+static int invoke_cgw_api_pkg_ready()
+{
+    int rc = 0;
+
+    struct mg_connection* nc = NULL;
+    struct mg_mgr mgr;
+    struct bs_cgw_api_handler* api_ctx = &g_ctx.cgw_api_pkg_new;
+
+    api_ctx->cgw_thread_exit = 0;
+    api_ctx->cgw_api_rc = -9;//no resp
+
+    char* post_data = cgw_api_payload_pkg_new();
+
+
+    mg_mgr_init(&mgr, NULL);
+    nc = mg_connect_http(&mgr, MG_CB(cgw_api_pkg_new_handler, NULL), api_ctx->api,
+        "Content-Type: application/json\r\n", post_data);
+    if (NULL == nc) {
+        rc = -8;//session fail
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "Invoke cgw_api_pkg_ready fail:session fail");
+        goto DONE;
+    }
+
+    //use 1.5 seconds as request timeout 
+    mg_set_timer(nc, mg_time() + 1.5);
+
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "->cgw_api_pkg_ready: %d\n%s", (int)strlen(post_data), post_data);
+
+    while (api_ctx->cgw_thread_exit == 0) {
+        mg_mgr_poll(&mgr, 200);
+    }
+
+    rc = api_ctx->cgw_api_rc;
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-cgw_api_pkg_ready: %d", rc);
+
+DONE:
+    mg_mgr_free(&mgr);
+
+    return (rc);
+}
 
 //---------------------------------------------------------------------------
 // Core state machine
@@ -1195,52 +1273,59 @@ static void core_state_handler(int new_stat) {
         break;
     case DLC_PKG_NEW:
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: DLC_PKG_NEW\n");
-        if (0 == dlc_download_l1_manifest_all_package()) {
-            //dlc_fsm_sign(&g_fsm, DLC_PKG_READY);
-            //TMP:stop fsm chain
-            dlc_fsm_sign(&g_fsm, STAT_IDLE);
+        if (0 == dlc_download_l1_manifest_packages()) {
+            dlc_fsm_sign(&g_ctx.dlc_fsm, DLC_PKG_READY);
         }
         else {
-            dlc_fsm_sign(&g_fsm, STAT_IDLE);
+            dlc_fsm_sign(&g_ctx.dlc_fsm, STAT_IDLE);
         }
         break;
     case DLC_PKG_READY:
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: DLC_PKG_READY\n");
-        mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_pkg_new));
+        if (0 == invoke_cgw_api_pkg_ready()) {
+            dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_PKG_DOWNLOADING);
+        }
+        else {
+            dlc_fsm_sign(&g_ctx.dlc_fsm, STAT_IDLE);
+        }
         break;
     case ORCH_CON_ERR:
         break;
     case ORCH_PKG_DOWNLOADING:
-        if (g_ctx.cgw_api_pkg_stat.nc == NULL)
-            mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_pkg_stat));
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_DOWNLOADING\n");
+        //if (g_ctx.cgw_api_pkg_stat.nc == NULL)
+        //    mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_pkg_stat));
         break;
     case ORCH_PKG_BAD:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_BAD\n");
         break;
     case ORCH_PKG_READY:
-        mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_tdr_run));
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_READY\n");
+        //mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_tdr_run));
         break;
     case ORCH_TDR_RUN:
-        // TODO: protect two instances running in parallel
-        mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_tdr_stat));
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_TDR_RUN\n");
+        //// TODO: protect two instances running in parallel
+        //mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_tdr_stat));
         break;
     case ORCH_TDR_FAIL:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_TDR_FAIL\n");
         //mg_send(g_ctx.dmc, "{\"result\":\"TDR run failed\"}\n", 31);
         break;
     case ORCH_TDR_SUCC:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_TDR_SUCC\n");
         //mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\"}\n", 31);
         break;
     default:
         break;
     }
-
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "DRV core stat -> %d\n", g_stat);
 }
 //---------------------------------------------------------------------------
 // Main
 //---------------------------------------------------------------------------
 static void init_context() {
 
-
+  int rc = 0;
   g_stat = STAT_IDLE;
   g_ctx.dmc = NULL;
   g_ctx.hmi = NULL;
@@ -1251,33 +1336,28 @@ static void init_context() {
   init_hmi_objs(&g_ctx);
 
   // CGW http API
-  g_ctx.cgw_api_l1_mani_new.api = "http://10.0.2.15:8018/l1_mani/new";
-  g_ctx.cgw_api_l1_mani_new.cgw_thread_exit = 0;
-  g_ctx.cgw_api_l1_mani_new.fn = cgw_handler_l1_mani_new;
-  g_ctx.cgw_api_l1_mani_new.payload_gener = cgw_api_payload_l1_mani_new;
-  g_ctx.cgw_api_l1_mani_new.nc = NULL;
-  g_ctx.cgw_api_pkg_new.api = "http://192.168.0.2:8018/pkg/new";
+  g_ctx.cgw_api_pkg_new.api = "http://127.0.0.1:8018/pkg/new";
   g_ctx.cgw_api_pkg_new.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
   g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_pkg_new;
   g_ctx.cgw_api_pkg_new.nc = NULL;
-  g_ctx.cgw_api_pkg_stat.api = "http://192.168.0.2:8018/pkg/sta";
+  g_ctx.cgw_api_pkg_stat.api = "http://127.0.0.1:8018/pkg/sta";
   g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_stat.fn = cgw_handler_pkg_stat;
   g_ctx.cgw_api_pkg_stat.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_pkg_stat.nc = NULL;
-  g_ctx.cgw_api_tdr_run.api = "http://192.168.0.2:8018/tdr/run";
+  g_ctx.cgw_api_tdr_run.api = "http://127.0.0.1:8018/tdr/run";
   g_ctx.cgw_api_tdr_run.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_run.fn = cgw_handler_tdr_run;
   g_ctx.cgw_api_tdr_run.payload_gener = cgw_api_payload_pkg_new;// TODO:use same of pkg_new is ok
   g_ctx.cgw_api_tdr_run.nc = NULL;
-  g_ctx.cgw_api_tdr_stat.api = "http://192.168.0.2:8018/tdr/stat";
+  g_ctx.cgw_api_tdr_stat.api = "http://127.0.0.1:8018/tdr/stat";
   g_ctx.cgw_api_tdr_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_stat.fn = cgw_handler_tdr_stat;
   g_ctx.cgw_api_tdr_stat.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_tdr_stat.nc = NULL;
   // TODO: so far use curl to upload
-  g_ctx.cgw_api_pkg_upload.api = "http://192.168.0.2:8018/upload";
+  g_ctx.cgw_api_pkg_upload.api = "http://127.0.0.1:8018/upload";
   g_ctx.cgw_api_pkg_upload.fn = NULL;
   g_ctx.cgw_api_pkg_upload.nc = NULL;
 
@@ -1286,14 +1366,22 @@ static void init_context() {
 
   g_ctx.pkg_url = "ftp://speedtest.tele2.net/1KB.zip";
 
-  memset(g_ctx.cur_manifest.dev_id, 0, 32);
-  memset(g_ctx.cur_manifest.pkg_cdn_url, 0, 128);
+  //memset(g_ctx.cur_manifest.dev_id, 0, 32);
+  //memset(g_ctx.cur_manifest.pkg_cdn_url, 0, 128);
   
   g_ctx.downloader = "curl --output /share/wpc.1.0.0"; 
 //  g_ctx.downloader = "/data/duc/test_interface/dlc";
 
   // Change to FTPS
   g_ctx.tftp_server = "sudo ./tftpserver"; 
+
+
+  memset(&g_ctx.l1_mani, 0, sizeof(g_ctx.l1_mani));
+  memset(&g_ctx.l1_mani_txt, 0, sizeof(g_ctx.l1_mani_txt));
+  rc = dlc_fsm_init(&g_ctx.dlc_fsm, core_state_handler);
+  if (rc) {
+      LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "Init dlc fsm failed:%d", rc);
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -1308,21 +1396,20 @@ int main(int argc, char *argv[]) {
   }
 
   init_context();
-  dlc_fsm_init(&g_fsm, core_state_handler);
 
   mg_mgr_init(&mgr, NULL);
 
   LOG_PRINT(IDCM_LOG_LEVEL_INFO,"=== Start socket server ===\n");
 
-  mg_bind(&mgr, "3000", dmc_msg_handler);
+  mg_bind(&mgr, "3000", MG_CB(dmc_msg_handler, NULL));
   LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Listen on port 3000 for DMC msg\n");
 
-  mg_bind(&mgr, "3001", hmi_msg_handler);
+  mg_bind(&mgr, "3001", MG_CB(hmi_msg_handler, NULL));
   LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Listen on port 3001 for HMI msg\n");
 
-  nc = mg_bind(&mgr, "8019", cgw_msg_handler);
+  nc = mg_bind(&mgr, "8019", MG_CB(cgw_msg_handler, NULL));
   LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Listen on port 8019 for CGW msg\n");
-  mg_register_http_endpoint(nc, "/status", cgw_monitor_handle_status MG_UD_ARG(NULL));
+  mg_register_http_endpoint(nc, "/status", MG_CB(cgw_monitor_handle_status, NULL));
   mg_set_protocol_http_websocket(nc);
 
   for (;;) {
