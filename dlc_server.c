@@ -586,7 +586,7 @@ static void hmi_cmd_handle(const char* payload)
     if (root == NULL) {
 
         LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "parse cmd payload fail\n");
-        return 0;
+        return;
     }
         
 
@@ -646,7 +646,6 @@ static void hmi_msg_handler(struct mg_connection *nc, int ev, void *p) {
 
     (void)p;
 
-    int rc = 0;
     unsigned int len = 0;
     struct mbuf* io = &nc->recv_mbuf;
     unsigned char* ubuf = (unsigned char*)(io->buf);
