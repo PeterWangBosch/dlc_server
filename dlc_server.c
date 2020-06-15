@@ -572,24 +572,116 @@ last_step:
   return result; 
 }
 
-static void hmi_msg_handler(struct mg_connection *nc, int ev, void *p) {
-  unsigned int len = 0;
-  struct mbuf *io = &nc->recv_mbuf;
-  (void) p;
+static void hmi_cmd_handle(const char* payload)
+{
+    int resp_len = 0;
+    static char response[1024];
+    struct cJSON* root = NULL;
+    struct cJSON* iterator = NULL;
+    int cmd = 0;
+    char uuid[64];
 
-  switch (ev) {
-    case MG_EV_ACCEPT:
-      g_ctx.hmi = nc;
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"HMI Msg: socket connected\n");
-      break;
-    case MG_EV_RECV:
-      // first 4 bytes for length
-      len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);
-      hmi_payload_parser(&g_ctx, io->buf+4, len);
-      break;
+    root = cJSON_Parse(payload);
+
+    if (root == NULL) {
+
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "parse cmd payload fail\n");
+        return 0;
+    }
+        
+
+    // TODO: validate whole JSON
+    iterator = root->child;
+    while (iterator) {
+        if (strcmp(iterator->string, "func-id") == 0) {
+            if (!cJSON_IsNumber(iterator))
+                goto DONE;
+            cmd = iterator->valueint;
+        }
+
+        if (strcmp(iterator->string, "uuid") == 0) {
+            strcpy(uuid, iterator->valuestring);
+        }
+
+        iterator = iterator->next;
+    }
+    // TODO: synthesize response acoording to coming in value
+    switch (cmd) {
+    case START_UPGRADE:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "HMI Msg: recv HMI_CMD_UPGRADE\n");
+
+        resp_len = hmi_resp_start_upgrade(&g_ctx, response, uuid);
+        if (g_stat == ORCH_PKG_READY) {
+            dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_PKG_INST);
+            mg_send(g_ctx.hmi, response, resp_len);
+        }
+        else {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Skip HMI_CMD_UPGRADE for core stat != ORCH_PKG_READY\n");
+        }
+        break;
+
+    case UPGRADE_PROGRESS:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "HMI Msg: recv HMI_CMD_UPGRADE_PROGRESS\n");
+
+        resp_len = hmi_resp_upgrade_stat(&g_ctx, response, "7950f8e2-6cd4-11ea-a9a9-571f576d565b"); // TODO: generate uuid
+        mg_send(g_ctx.hmi, response, resp_len);
+        break;
+
+    case CHECK_NEW_PACKAGE:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "HMI msg: recv HMI_CMD_CHECK_NEW_PACKAGE\n");
+        resp_len = hmi_resp_check_new_pkg(&g_ctx, response, uuid);
+        mg_send(g_ctx.hmi, response, resp_len);
+        break;
+
     default:
-      break;
-  }
+        break;
+    }
+
+DONE:
+    if (root)
+        cJSON_Delete(root);
+}
+
+static void hmi_msg_handler(struct mg_connection *nc, int ev, void *p) {
+
+    (void)p;
+
+    int rc = 0;
+    unsigned int len = 0;
+    struct mbuf* io = &nc->recv_mbuf;
+    unsigned char* ubuf = (unsigned char*)(io->buf);
+
+    switch (ev) {
+    case MG_EV_ACCEPT:
+        g_ctx.hmi = nc;
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "HMI :conned\n");
+        break;
+    case MG_EV_RECV:
+        // first 4 bytes for length
+        //len = io->buf[3] + (io->buf[2] << 8) + (io->buf[1] << 16) + (io->buf[0] << 24);
+        len = ((unsigned)ubuf[3]) + ((unsigned)ubuf[2] << 8) +
+            ((unsigned)ubuf[1] << 16) + ((unsigned)ubuf[0] << 24);
+
+        if (io->len >= len + 4) {
+            char sav_c = io->buf[len + 4];
+            io->buf[len + 4] = '\0';
+
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "HMI :%s\n", io->buf + 4);
+            hmi_cmd_handle(io->buf + 4);
+
+            io->buf[len + 4] = sav_c;
+            mbuf_remove(io, len + 4);
+        }
+
+
+        break;
+    case MG_EV_CLOSE:
+        g_ctx.hmi = nc;
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "HMI :closed\n");
+        break;
+    default:
+        break;
+    }
 }
 
 static void * hmi_thread(void * param) {
@@ -868,10 +960,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
           bs_l1_manifest_t mani = { 0 };
           if (JCFG_ERR_OK == bs_parse_l1_manifest(io->buf + 4, &mani)) {
               LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Parse dmc_l1_manifest success\n");
-
-              
-              //mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_l1_mani_new));
-
+          
               //drive dlc core_state 
               if (STAT_IDLE == g_stat ||
                   DLC_PKG_BAD == g_stat ||
@@ -892,7 +981,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
               }
               else {
                   LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
-                      "Skip DLC_PKG_NEW event for core stat != %02X\n", g_stat);
+                      "Skip DLC_PKG_NEW event for core stat == %02X\n", g_stat);
               }              
           }
 
@@ -1414,7 +1503,7 @@ static int invoke_cgw_api_pkg_stat()
             continue;
         }
         //no resp as fail
-        else if (ORCH_RESP_NONE == rc) {
+        else {
 
             LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_RESP_NONE");
             goto DONE;
@@ -1473,6 +1562,9 @@ static void core_state_handler(int new_stat) {
         else {
             dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_PKG_BAD);
         }
+        break;
+    case ORCH_PKG_INST:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_INST\n");
         break;
     case ORCH_PKG_BAD:
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_BAD\n");
