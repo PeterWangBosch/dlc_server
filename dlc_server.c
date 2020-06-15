@@ -3,7 +3,9 @@
  * All rights reserved
  */
 
-#include "stdio.h"
+#include <stdio.h>
+#include <unistd.h>
+
 #include "bs_dlc_utils.h"
 #include "cJSON/cJSON.h"
 #include "log/idcm_log.h"
@@ -84,6 +86,10 @@ struct bs_ecu_upgrade_stat {
 #define ORCH_TDR_RUN 0x50
 #define ORCH_TDR_FAIL 0x60
 #define ORCH_TDR_SUCC 0x70
+#define ORCH_PKG_INST 0x80
+#define ORCH_INST_FAIL 0x90
+#define ORCH_RESP_NONE 0xFF
+
 static unsigned char g_stat = 0;
 static unsigned char g_stat_lock = 0;
 struct bs_l1_manifest {
@@ -867,13 +873,18 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
               //mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_l1_mani_new));
 
               //drive dlc core_state 
-              if (STAT_IDLE == g_stat) {
+              if (STAT_IDLE == g_stat ||
+                  DLC_PKG_BAD == g_stat ||
+                  ORCH_CON_ERR == g_stat ||
+                  ORCH_PKG_BAD == g_stat ||
+                  ORCH_INST_FAIL == g_stat) {
 
-                  //save l1_manifest document to local storage
+                  //save l1_manifest struct/document to local storage
                   memset(g_ctx.l1_mani_txt, 0, sizeof(g_ctx.l1_mani_txt));
                   memcpy(g_ctx.l1_mani_txt, io->buf + 4, len);
-
                   memcpy(&g_ctx.l1_mani, &mani, sizeof(g_ctx.l1_mani));
+
+                  //drv core stat machine
                   rc = dlc_fsm_sign(&g_ctx.dlc_fsm, DLC_PKG_NEW);
                   if (rc) {
                       LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "Signal DLC_PKG_NEW to dlc fsm failed:%d", rc);
@@ -881,7 +892,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
               }
               else {
                   LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
-                      "Skip DLC_PKG_NEW event for core stat != STAT_IDLE\n");
+                      "Skip DLC_PKG_NEW event for core stat != %02X\n", g_stat);
               }              
           }
 
@@ -1215,7 +1226,7 @@ void cgw_api_pkg_new_handler(struct mg_connection* nc, int ev, void* ev_data)
     }
 }
 
-static int invoke_cgw_api_pkg_ready()
+static int invoke_cgw_api_pkg_new()
 {
     int rc = 0;
 
@@ -1256,6 +1267,166 @@ DONE:
     return (rc);
 }
 
+static const char* mg_ev_name(int ev) {
+
+    static const char* ev_nc_name[] = {
+        "MG_EV_POLL", //#define MG_EV_POLL 0    /* Sent to each connection on each mg_mgr_poll() call */
+        "MG_EV_ACCEPT", //#define MG_EV_ACCEPT 1  /* New connection accepted. union socket_address * */
+        "MG_EV_CONNECT", //#define MG_EV_CONNECT 2 /* connect() succeeded or failed. int *  */
+        "MG_EV_RECV", //#define MG_EV_RECV 3    /* Data has been received. int *num_bytes */
+        "MG_EV_SEND", //#define MG_EV_SEND 4    /* Data has been written to a socket. int *num_bytes */
+        "MG_EV_CLOSE", //#define MG_EV_CLOSE 5   /* Connection is closed. NULL */
+        "MG_EV_TIMER", //#define MG_EV_TIMER 6   /* now >= conn->ev_timer_time. double * */
+    };
+    static const char* ev_http_name[] = {
+        "MG_EV_HTTP_REQUEST", //#define MG_EV_HTTP_REQUEST 100 /* struct http_message * */
+        "MG_EV_HTTP_REPLY", //#define MG_EV_HTTP_REPLY 101   /* struct http_message * */
+        "MG_EV_HTTP_CHUNK", //#define MG_EV_HTTP_CHUNK 102   /* struct http_message * */
+        "MG_EV_SSI_CALL", //#define MG_EV_SSI_CALL 105     /* char * */
+        "MG_EV_SSI_CALL_CTX", //#define MG_EV_SSI_CALL_CTX 106 /* struct mg_ssi_call_ctx * */
+    };
+
+
+    static char mg_unk[32];
+
+    if (ev >= MG_EV_POLL && ev <= MG_EV_TIMER) {
+        return (ev_nc_name[ev]);
+    }
+    else if (ev >= MG_EV_HTTP_REQUEST && ev <= MG_EV_SSI_CALL_CTX) {
+        return (ev_http_name[ev- MG_EV_HTTP_REQUEST]);
+    }
+    else
+    {
+        snprintf(mg_unk, sizeof(mg_unk) - 1, "MG_EV_UNK(%d)", ev);
+        return (mg_unk);
+    }
+}
+
+void cgw_api_pkg_stat_handler(struct mg_connection* nc, int ev, void* ev_data)
+{
+    struct http_message* hm = (struct http_message*)ev_data;
+    (void)hm;
+
+    struct bs_cgw_api_handler* ctx = &g_ctx.cgw_api_pkg_stat;
+    if (ev == MG_EV_CONNECT ||
+        ev == MG_EV_HTTP_REPLY ||
+        ev == MG_EV_CLOSE) {
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "oc:%p,nc:%p,ev:%s\n", ctx->nc, nc, mg_ev_name(ev));
+    }
+
+    switch (ev) {
+        case MG_EV_CONNECT: {
+            assert(!ctx->nc);
+            ctx->nc = nc;
+        } break;
+
+        case MG_EV_HTTP_REPLY: {
+            nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+            if (nc != ctx->nc) {
+                LOG_PRINT(IDCM_LOG_LEVEL_INFO, "nc not same as ctx, ingore\n");
+                break;
+            }
+            else {
+                LOG_PRINT(IDCM_LOG_LEVEL_INFO, "resp:%d %s\n", hm->resp_code, hm->body.p);
+
+                ctx->cgw_thread_exit = 1;
+                if (hm->resp_code != 200 || strstr(hm->body.p, "fail") != NULL) {
+                    ctx->cgw_api_rc = ORCH_PKG_BAD;
+                }
+                else {
+                    ctx->cgw_api_rc = ORCH_PKG_READY;
+                }               
+            }
+
+        } break;
+
+        case MG_EV_CLOSE: {
+            if (nc != ctx->nc) {
+                LOG_PRINT(IDCM_LOG_LEVEL_INFO, "nc not same as ctx, ingore\n");
+                break;
+            }
+            else {
+                ctx->cgw_thread_exit = 1;
+            }
+        }break;
+
+        default: {
+
+        } break;
+    }//switch (ev)
+}
+
+
+static int invoke_cgw_api_pkg_stat()
+{
+    int rc = 0;
+
+    struct mg_connection* nc = NULL;
+    struct mg_mgr mgr;
+    struct bs_cgw_api_handler* api_ctx = &g_ctx.cgw_api_pkg_stat;
+
+
+    const char* post_data = "{\"func-id\":\"pkg-stat\"}";
+
+
+    mg_mgr_init(&mgr, NULL);
+
+    while (true) {
+        
+        //reset ctx for each query
+        api_ctx->nc = NULL;
+        api_ctx->cgw_thread_exit = 0;
+        api_ctx->cgw_api_rc = ORCH_RESP_NONE;
+
+
+        nc = mg_connect_http(&mgr, MG_CB(cgw_api_pkg_stat_handler, NULL), api_ctx->api,
+            "Content-Type: application/json\r\n", post_data);
+        if (NULL == nc) {
+            rc = ORCH_CON_ERR;//session fail
+            LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "Invoke Orch/api/pkg/stat fail:session fail");
+            goto DONE;
+        }
+        else {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "->Orch/api/pkg/stat: %d|%s\n", (int)strlen(post_data), post_data);
+        }        
+
+        while (api_ctx->cgw_thread_exit == 0) {
+            mg_mgr_poll(&mgr, 200);
+        }
+
+        rc = api_ctx->cgw_api_rc;
+
+        //orch download pkg success
+        if (ORCH_PKG_READY == rc) {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_PKG_READY");
+            goto DONE;
+        }
+        //orch download pkg fail
+        else if (ORCH_PKG_BAD == rc) {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_PKG_BAD");
+            goto DONE;
+        }
+        //orch on downloading, so wait 200ms and continue query stat
+        else if (ORCH_PKG_DOWNLOADING == rc) {
+
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_PKG_DOWNLOADING");
+            usleep(1000 * 200);
+            continue;
+        }
+        //no resp as fail
+        else if (ORCH_RESP_NONE == rc) {
+
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_RESP_NONE");
+            goto DONE;
+        }
+    }
+    
+DONE:
+    mg_mgr_free(&mgr);
+
+    return (rc);
+}
+
 //---------------------------------------------------------------------------
 // Core state machine
 // Set g_stat_lock=1 before invoking this function, then reset it to 0
@@ -1285,7 +1456,7 @@ static void core_state_handler(int new_stat) {
         break;
     case DLC_PKG_READY:
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: DLC_PKG_READY\n");
-        if (0 == invoke_cgw_api_pkg_ready()) {
+        if (0 == invoke_cgw_api_pkg_new()) {
             dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_PKG_DOWNLOADING);
         }
         else {
@@ -1296,8 +1467,12 @@ static void core_state_handler(int new_stat) {
         break;
     case ORCH_PKG_DOWNLOADING:
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_DOWNLOADING\n");
-        //if (g_ctx.cgw_api_pkg_stat.nc == NULL)
-        //    mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_pkg_stat));
+        if (ORCH_PKG_READY == invoke_cgw_api_pkg_stat()) {
+            dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_PKG_READY);
+        }
+        else {
+            dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_PKG_BAD);
+        }
         break;
     case ORCH_PKG_BAD:
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_BAD\n");
@@ -1344,7 +1519,7 @@ static void init_context() {
   g_ctx.cgw_api_pkg_new.fn = cgw_handler_pkg_new;
   g_ctx.cgw_api_pkg_new.payload_gener = cgw_api_payload_pkg_new;
   g_ctx.cgw_api_pkg_new.nc = NULL;
-  g_ctx.cgw_api_pkg_stat.api = "http://127.0.0.1:8018/pkg/sta";
+  g_ctx.cgw_api_pkg_stat.api = "http://127.0.0.1:8018/pkg/stat";
   g_ctx.cgw_api_pkg_stat.cgw_thread_exit = 0;
   g_ctx.cgw_api_pkg_stat.fn = cgw_handler_pkg_stat;
   g_ctx.cgw_api_pkg_stat.payload_gener = cgw_api_payload_default;
