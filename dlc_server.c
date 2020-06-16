@@ -644,19 +644,19 @@ static void * dmc_downloader_thread(void * param) {
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
   } else {
     // TODO: read from L1 Manifest
-    if ((fp = popen("curl --output /share/vdcm1_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/mcu_SH0105A2T1.hex", "r")) == NULL) {
+    if ((fp = popen("curl --output /share/mcu_SH0105A2T1.hex http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/mcu_SH0105A2T1.hex", "r")) == NULL) {
       return NULL;
     }
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm2_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_app_hh.bin.zip", "r")) == NULL) {
+//    if ((fp = popen("curl --output /share/xcu8.0_app_hh.bin.zip http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_app_hh.bin.zip", "r")) == NULL) {
+//      return NULL;
+//    }
+//    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
+    if ((fp = popen("curl --output /share/xcu8.0_kernel_v1.1.2.bins http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_kernel_v1.1.2.bins", "r")) == NULL) {
       return NULL;
     }
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm3_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_kernel_v1.1.2.bins", "r")) == NULL) {
-      return NULL;
-    }
-    while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
-    if ((fp = popen("curl --output /share/vdcm4_1.0.0 http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_rootfs_hh.bin.zip", "r")) == NULL) {
+    if ((fp = popen("curl --output /share/xcu8.0_rootfs_hh.bin.zip http://hhfota-q.bosch-mobility-solutions.cn/cdn/fota/v1/VDCM/package/1.0/xcu8.0_rootfs_hh.bin.zip", "r")) == NULL) {
       return NULL;
     }
     while (fgets(p_ctx->cmd_output, 512, fp) != NULL);
