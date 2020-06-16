@@ -87,7 +87,9 @@ struct bs_ecu_upgrade_stat {
 #define ORCH_TDR_FAIL 0x60
 #define ORCH_TDR_SUCC 0x70
 #define ORCH_PKG_INST 0x80
-#define ORCH_INST_FAIL 0x90
+#define ORCH_INST_GOING 0x81
+#define ORCH_INST_SUCC 0x88
+#define ORCH_INST_FAIL 0x89
 #define ORCH_RESP_NONE 0xFF
 
 static unsigned char g_stat = 0;
@@ -104,6 +106,7 @@ struct bs_context {
   struct bs_cgw_api_handler cgw_api_l1_mani_new;
   struct bs_cgw_api_handler cgw_api_pkg_new;
   struct bs_cgw_api_handler cgw_api_pkg_stat;
+  struct bs_cgw_api_handler cgw_api_pkg_inst;
   struct bs_cgw_api_handler cgw_api_tdr_run;
   struct bs_cgw_api_handler cgw_api_tdr_stat;
   struct bs_cgw_api_handler cgw_api_pkg_upload;
@@ -577,7 +580,7 @@ static void hmi_cmd_handle(const char* payload)
     int resp_len = 0;
     static char response[1024];
     struct cJSON* root = NULL;
-    struct cJSON* iterator = NULL;
+    struct cJSON* elem = NULL;
     int cmd = 0;
     char uuid[64];
 
@@ -590,20 +593,19 @@ static void hmi_cmd_handle(const char* payload)
     }
         
 
-    // TODO: validate whole JSON
-    iterator = root->child;
-    while (iterator) {
-        if (strcmp(iterator->string, "func-id") == 0) {
-            if (!cJSON_IsNumber(iterator))
+    elem = root->child;
+    while (elem) {
+        if (strcmp(elem->string, "func-id") == 0) {
+            if (!cJSON_IsNumber(elem))
                 goto DONE;
-            cmd = iterator->valueint;
+            cmd = elem->valueint;
         }
 
-        if (strcmp(iterator->string, "uuid") == 0) {
-            strcpy(uuid, iterator->valuestring);
+        if (strcmp(elem->string, "uuid") == 0) {
+            strcpy(uuid, elem->valuestring);
         }
 
-        iterator = iterator->next;
+        elem = elem->next;
     }
     // TODO: synthesize response acoording to coming in value
     switch (cmd) {
@@ -675,7 +677,7 @@ static void hmi_msg_handler(struct mg_connection *nc, int ev, void *p) {
 
         break;
     case MG_EV_CLOSE:
-        g_ctx.hmi = nc;
+        g_ctx.hmi = NULL;
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "HMI :closed\n");
         break;
     default:
@@ -1444,7 +1446,6 @@ void cgw_api_pkg_stat_handler(struct mg_connection* nc, int ev, void* ev_data)
     }//switch (ev)
 }
 
-
 static int invoke_cgw_api_pkg_stat()
 {
     int rc = 0;
@@ -1515,6 +1516,113 @@ DONE:
     return (rc);
 }
 
+void cgw_api_pkg_inst_handler(struct mg_connection* nc, int ev, void* ev_data)
+{
+    struct http_message* hm = (struct http_message*)ev_data;
+    (void)hm;
+
+    struct bs_cgw_api_handler* ctx = &g_ctx.cgw_api_pkg_inst;
+    if (ev == MG_EV_CONNECT ||
+        ev == MG_EV_HTTP_REPLY ||
+        ev == MG_EV_CLOSE) {
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "oc:%p,nc:%p,ev:%s\n", ctx->nc, nc, mg_ev_name(ev));
+    }
+
+    switch (ev) {
+    case MG_EV_CONNECT: {
+        assert(!ctx->nc);
+        ctx->nc = nc;
+    } break;
+
+    case MG_EV_HTTP_REPLY: {
+        nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+        if (nc != ctx->nc) {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "nc not same as ctx, ingore\n");
+            break;
+        }
+        else {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "resp:%d %s\n", hm->resp_code, hm->body.p);
+
+            ctx->cgw_thread_exit = 1;
+            if (hm->resp_code != 200 || strstr(hm->body.p, "fail") != NULL) {
+                ctx->cgw_api_rc = ORCH_INST_FAIL;
+            }
+            else {
+                ctx->cgw_api_rc = ORCH_INST_GOING;
+            }
+        }
+
+    } break;
+
+    case MG_EV_CLOSE: {
+        if (nc != ctx->nc) {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "nc not same as ctx, ingore\n");
+            break;
+        }
+        else {
+            ctx->cgw_thread_exit = 1;
+        }
+    } break;
+    }//switch (ev)
+}
+
+static int invoke_cgw_api_pkg_inst()
+{
+    int rc = 0;
+
+    struct mg_connection* nc = NULL;
+    struct mg_mgr mgr;
+    struct bs_cgw_api_handler* api_ctx = &g_ctx.cgw_api_pkg_inst;
+
+
+    const char* post_data = "{\"cgw-api\":\"pkg-inst\"}";
+
+
+    mg_mgr_init(&mgr, NULL);
+
+    while (true) {
+
+        //reset ctx for each query
+        api_ctx->nc = NULL;
+        api_ctx->cgw_thread_exit = 0;
+        api_ctx->cgw_api_rc = ORCH_RESP_NONE;
+
+
+        nc = mg_connect_http(&mgr, MG_CB(cgw_api_pkg_inst_handler, NULL), api_ctx->api,
+            "Content-Type: application/json\r\n", post_data);
+        if (NULL == nc) {
+            rc = ORCH_CON_ERR;//session fail
+            LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "-> orch/api/pkg/inst session fail");
+            goto DONE;
+        }
+        else {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "-> orch/api/pkg/inst: %d|%s\n", (int)strlen(post_data), post_data);
+        }
+
+        while (api_ctx->cgw_thread_exit == 0) {
+            mg_mgr_poll(&mgr, 200);
+        }
+
+        rc = api_ctx->cgw_api_rc;
+
+        //orch pkg install on going
+        if (ORCH_INST_GOING == rc) {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<- orch/api/pkg/inst: ORCH_INST_GOING");
+            goto DONE;
+        }
+        //orch pkg instal fail
+        else {
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<- orch/api/pkg/inst: ORCH_INST_FAIL");
+            goto DONE;
+        }
+    }
+
+DONE:
+    mg_mgr_free(&mgr);
+
+    return (rc);
+}
+
 //---------------------------------------------------------------------------
 // Core state machine
 // Set g_stat_lock=1 before invoking this function, then reset it to 0
@@ -1562,30 +1670,32 @@ static void core_state_handler(int new_stat) {
             dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_PKG_BAD);
         }
         break;
-    case ORCH_PKG_INST:
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_INST\n");
-        break;
     case ORCH_PKG_BAD:
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_BAD\n");
         break;
     case ORCH_PKG_READY:
         LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_READY\n");
-        //mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_tdr_run));
         break;
-    case ORCH_TDR_RUN:
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_TDR_RUN\n");
-        //// TODO: protect two instances running in parallel
-        //mg_start_thread(cgw_msg_thread, (void*)&(g_ctx.cgw_api_tdr_stat));
+    case ORCH_PKG_INST:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_PKG_INST\n");
+        if (ORCH_INST_GOING == invoke_cgw_api_pkg_inst()) {
+            dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_INST_GOING);
+        }
+        else {
+            dlc_fsm_sign(&g_ctx.dlc_fsm, ORCH_INST_FAIL);
+        }
         break;
-    case ORCH_TDR_FAIL:
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_TDR_FAIL\n");
-        //mg_send(g_ctx.dmc, "{\"result\":\"TDR run failed\"}\n", 31);
+    case ORCH_INST_GOING:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_INST_GOING\n");
         break;
-    case ORCH_TDR_SUCC:
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_TDR_SUCC\n");
-        //mg_send(g_ctx.dmc, "{\"result\":\"TDR run succesful\"}\n", 31);
+    case ORCH_INST_SUCC:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_INST_SUCC\n");
+        break;
+    case ORCH_INST_FAIL:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: ORCH_INST_FAIL\n");
         break;
     default:
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Core stat: unspport=%d\n", g_stat);
         break;
     }
 }
@@ -1615,6 +1725,11 @@ static void init_context() {
   g_ctx.cgw_api_pkg_stat.fn = cgw_handler_pkg_stat;
   g_ctx.cgw_api_pkg_stat.payload_gener = cgw_api_payload_default;
   g_ctx.cgw_api_pkg_stat.nc = NULL;
+  g_ctx.cgw_api_pkg_inst.api = "http://127.0.0.1:8018/pkg/inst";
+  g_ctx.cgw_api_pkg_inst.cgw_thread_exit = 0;
+  g_ctx.cgw_api_pkg_inst.fn = NULL;
+  g_ctx.cgw_api_pkg_inst.payload_gener = NULL;
+  g_ctx.cgw_api_pkg_inst.nc = NULL;
   g_ctx.cgw_api_tdr_run.api = "http://127.0.0.1:8018/tdr/run";
   g_ctx.cgw_api_tdr_run.cgw_thread_exit = 0;
   g_ctx.cgw_api_tdr_run.fn = cgw_handler_tdr_run;
