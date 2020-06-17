@@ -1289,7 +1289,7 @@ void cgw_api_pkg_new_handler(struct mg_connection* nc, int ev, void* ev_data)
 
     switch (ev) {
     case MG_EV_CONNECT:
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request Orchestrator pkg new: connected\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "connected\n");
         break;
 
     case MG_EV_HTTP_REPLY:        
@@ -1300,14 +1300,14 @@ void cgw_api_pkg_new_handler(struct mg_connection* nc, int ev, void* ev_data)
         break;
 
     case MG_EV_TIMER:
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request Orchestrator pkg new: timeout\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "timeout\n");
         nc->flags |= MG_F_CLOSE_IMMEDIATELY;
         ctx->cgw_thread_exit = 1;
         ctx->cgw_api_rc = -1;
         break;
 
     case MG_EV_CLOSE:
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Request Orchestrator pkg new: closed\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "closed\n");
         ctx->cgw_thread_exit = 1;
         break;
 
@@ -1335,21 +1335,21 @@ static int invoke_cgw_api_pkg_new()
         "Content-Type: application/json\r\n", post_data);
     if (NULL == nc) {
         rc = -8;//session fail
-        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "Invoke cgw_api_pkg_ready fail:session fail");
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "session fail");
         goto DONE;
     }
 
     //use 1.5 seconds as request timeout 
     mg_set_timer(nc, mg_time() + 1.5);
 
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "->cgw_api_pkg_ready: %d\n%s", (int)strlen(post_data), post_data);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "-> %d\n%s", (int)strlen(post_data), post_data);
 
     while (api_ctx->cgw_thread_exit == 0) {
         mg_mgr_poll(&mgr, 200);
     }
 
     rc = api_ctx->cgw_api_rc;
-    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-cgw_api_pkg_ready: %d", rc);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<- %d", rc);
 
 DONE:
     mg_mgr_free(&mgr);
@@ -1401,7 +1401,7 @@ void cgw_api_pkg_stat_handler(struct mg_connection* nc, int ev, void* ev_data)
     if (ev == MG_EV_CONNECT ||
         ev == MG_EV_HTTP_REPLY ||
         ev == MG_EV_CLOSE) {
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "oc:%p,nc:%p,ev:%s\n", ctx->nc, nc, mg_ev_name(ev));
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "nc:%p,ev:%s\n", nc, mg_ev_name(ev));
     }
 
     switch (ev) {
@@ -1417,14 +1417,22 @@ void cgw_api_pkg_stat_handler(struct mg_connection* nc, int ev, void* ev_data)
                 break;
             }
             else {
-                LOG_PRINT(IDCM_LOG_LEVEL_INFO, "resp:%d %s\n", hm->resp_code, hm->body.p);
+                LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
+                    "http-resp %d %s\n", 
+                    hm->resp_code, hm->body.p);
 
                 ctx->cgw_thread_exit = 1;
                 if (hm->resp_code != 200 || strstr(hm->body.p, "fail") != NULL) {
                     ctx->cgw_api_rc = ORCH_PKG_BAD;
                 }
                 else {
-                    ctx->cgw_api_rc = ORCH_PKG_READY;
+
+                    if (strstr(hm->body.p, "down")) {
+                        ctx->cgw_api_rc = ORCH_PKG_DOWNLOADING;
+                    }
+                    else {
+                        ctx->cgw_api_rc = ORCH_PKG_READY;
+                    }
                 }               
             }
 
@@ -1472,11 +1480,14 @@ static int invoke_cgw_api_pkg_stat()
             "Content-Type: application/json\r\n", post_data);
         if (NULL == nc) {
             rc = ORCH_CON_ERR;//session fail
-            LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "Invoke Orch/api/pkg/stat fail:session fail");
+            LOG_PRINT(IDCM_LOG_LEVEL_ERROR, 
+                "-> orch/api/pkg/stat session fail");
             goto DONE;
         }
         else {
-            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "->Orch/api/pkg/stat: %d|%s\n", (int)strlen(post_data), post_data);
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
+                "-> orch/api/pkg/stat %d|%s\n", 
+                (int)strlen(post_data), post_data);
         }        
 
         while (api_ctx->cgw_thread_exit == 0) {
@@ -1487,25 +1498,30 @@ static int invoke_cgw_api_pkg_stat()
 
         //orch download pkg success
         if (ORCH_PKG_READY == rc) {
-            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_PKG_READY");
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
+                "<- orch/api/pkg/stat ORCH_PKG_READY");
             goto DONE;
         }
         //orch download pkg fail
         else if (ORCH_PKG_BAD == rc) {
-            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_PKG_BAD");
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
+                "<- orch/api/pkg/stat: ORCH_PKG_BAD");
             goto DONE;
         }
-        //orch on downloading, so wait 200ms and continue query stat
+        //orch on downloading 
+        //so wait 500ms and continue query stat
         else if (ORCH_PKG_DOWNLOADING == rc) {
 
-            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_PKG_DOWNLOADING");
-            usleep(1000 * 200);
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
+                "<- orch/api/pkg/stat ORCH_PKG_DOWNLOADING");
+            usleep(1000 * 500);
             continue;
         }
         //no resp as fail
         else {
 
-            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "<-Orch/api/pkg/stat: ORCH_RESP_NONE");
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
+                "<- orch/api/pkg/stat ORCH_RESP_NONE");
             goto DONE;
         }
     }
@@ -1525,7 +1541,7 @@ void cgw_api_pkg_inst_handler(struct mg_connection* nc, int ev, void* ev_data)
     if (ev == MG_EV_CONNECT ||
         ev == MG_EV_HTTP_REPLY ||
         ev == MG_EV_CLOSE) {
-        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "oc:%p,nc:%p,ev:%s\n", ctx->nc, nc, mg_ev_name(ev));
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "nc:%p,ev:%s\n", nc, mg_ev_name(ev));
     }
 
     switch (ev) {
@@ -1541,7 +1557,8 @@ void cgw_api_pkg_inst_handler(struct mg_connection* nc, int ev, void* ev_data)
             break;
         }
         else {
-            LOG_PRINT(IDCM_LOG_LEVEL_INFO, "resp:%d %s\n", hm->resp_code, hm->body.p);
+            LOG_PRINT(IDCM_LOG_LEVEL_INFO, 
+                "http-resp %d %s\n", hm->resp_code, hm->body.p);
 
             ctx->cgw_thread_exit = 1;
             if (hm->resp_code != 200 || strstr(hm->body.p, "fail") != NULL) {
