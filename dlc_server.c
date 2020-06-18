@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "verison.h"
 #include "bs_dlc_utils.h"
 #include "cJSON/cJSON.h"
 #include "log/idcm_log.h"
@@ -16,7 +17,7 @@
 static char g_cmd_buf[3096];
 static char g_cmd_output[1024];
 
-static char * g_stub_inventory = "{\"messageType\":\"xxxxxxx\",\"correlationId\":\"xxxxxxx\",\"payload\":{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"vehicleVersion\":{\"orchestrator\":\"0.1.0.0\",\"dlc\":\"0.1.0.0\"},\"inventory\":[{\"ecu\":\"WPC\",\"softwareList\":[{\"softwareId\":\"WPC1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"unknown\",\"campaign\":\"unknown\"}]},{\"ecu\":\"VDCM1\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM2\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM3\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]},{\"ecu\":\"VDCM4\",\"softwareList\":[{\"softwareId\":\"VDCM1.0.0\",\"version\":\"1.0\",\"lastUpdated\":\"19000101 000000\",\"servicePack\":\"vdcm_pack\",\"campaign\":\"vdcm_camp\"}]}]}}";
+static char g_inventory[4096] = { 0 };
 
 /**
  * CGW API Handler
@@ -150,9 +151,102 @@ static void unlock() {
   g_stat_lock = 0;
 }
 
+
+static void dmc_resp_inventory(struct mg_connection* nc)
+{
+    char* hdr = g_inventory;
+
+    if (!nc) {
+        return;
+    }
+
+    unsigned int len = strlen(&g_inventory[4]);
+
+    hdr[0] = (char)(len >> 24);
+    hdr[1] = (char)(len >> 16);
+    hdr[2] = (char)(len >> 8);
+    hdr[3] = (char)(len);
+
+
+    printf("--- length to send: %d   \n", len);
+    printf("--- len in coding: %d %d %d %d \n", hdr[0], hdr[1], hdr[2], hdr[3]);
+
+    mg_send(nc, hdr, len + 4);
+}
+
+
 // -------------------------------------------------------------------
 // monitoring thread 
 // -------------------------------------------------------------------
+static void handle_rpt_inv(struct mg_connection* nc, int ev, void* ev_data)
+{
+    (void)nc;
+    (void)ev;
+
+    struct http_message* hm = (struct http_message*)ev_data;
+    if (!hm || hm->body.len <= 0)
+        return;
+
+    char* msg = NULL;
+    cJSON* root = NULL;
+    cJSON* ele = NULL;
+    cJSON* payload = NULL;
+    cJSON* vehicle = NULL;
+
+    root = cJSON_Parse(hm->body.p);
+    if (!root) {
+        return;
+    }
+    /*
+    {
+        "messageType": "MockData",
+        "correlationId": "MockData",
+        "payload": {
+            "fotaProtocolVersion": "HHFOTA-0.1",
+            "vehicleVersion": {
+                "orchestrator": "0.1.0.0",
+                "dlc": "0.1.0.0"
+            },
+    */
+    //add dlc version
+    payload = cJSON_GetObjectItem(root, "payload");
+    if (!payload) {
+        fprintf(stderr, "ERR,RPT_INV,/payload not find\n");
+        goto DONE;
+    }
+    vehicle = cJSON_GetObjectItem(payload, "vehicleVersion");
+    if (!vehicle) {
+        fprintf(stderr, "ERR,RPT_INV,/payload/vehicleVersion not find\n");
+        goto DONE;
+    }
+
+    ele = cJSON_CreateString(DLC_VER);
+    if (!ele) {
+        fprintf(stderr, "ERR,RPT_INV,alloc DLC_VER string fail\n");
+        goto DONE;
+    }
+    cJSON_AddItemToObject(vehicle, "dlc", ele);
+
+    msg = cJSON_PrintUnformatted(root);
+    if (!msg) {
+        fprintf(stderr, "ERR,RPT_INV,cJSON_PrintUnformatted fail\n");
+        goto DONE;
+    }
+
+    if (strlen(msg) + 5 > sizeof(g_inventory)) {
+        fprintf(stderr, "ERR,RPT_INV,g_inventory size too small\n");
+        goto DONE;
+    }
+    strncpy(&g_inventory[4], msg, sizeof(g_inventory)-4);
+    dmc_resp_inventory(g_ctx.dmc);
+
+DONE:
+    if (root)
+        cJSON_Delete(root);
+    if (msg)
+        cJSON_free(msg);
+}
+
 static void cgw_monitor_handle_status(struct mg_connection *nc, int ev, void *ev_data) {
   struct http_message * hm = (struct http_message *) ev_data;
   static char resp[1024];
@@ -903,24 +997,6 @@ static int dmc_msg_parse(const char *json) {
   return next_stat;
 }
 
-static void dmc_resp_inventory(struct mg_connection *nc)
-{
-  static char resp[512];
-  unsigned int len = strlen(g_stub_inventory);
-
-  strcpy(resp+4, g_stub_inventory);
-  resp[0] = (char) (len >> 24);
-  resp[1] = (char) (len >> 16);
-  resp[2] = (char) (len >> 8);
-  resp[3] = (char) (len);
-
-
-  printf("--- length to send: %d   \n", len);
-  printf("--- len in coding: %d %d %d %d \n", resp[0], resp[1], resp[2], resp[3]); 
-
-  mg_send(nc, resp, len+4);
-}
-
 //-----test--
 char * mani="{\"fotaProtocolVersion\":\"HHFOTA-0.1\",\"fotaCertUrl\":\"root ota cert download url\",\"manifest\":{\"servicePack\":{\"englishName\":\"service pack name\",\"chineseName\":\"service pack name\"},\"featurePack\":{\"activationCode\":\"\",\"featurePackId\":\"\"},\"campaign\":\"campaign id\",\"expiration\":\"YYYYMMDD HHMMSS\",\"releaseNotes\":[{\"locale\":\"en\",\"text\":\"English text\"},{\"locale\":\"zh\",\"text\":\"\"}],\"keyword\":\"\",\"orchestration\":{\"vehicleCondition\":{},\"preprocessing\":{},\"postprocessing\":{}},\"packages\":[{\"ecu\":\"WPC\",\"deviceType\":\"can\",\"softwareId\":\"wpc\",\"softwareName\":\"wpc\",\"softwareChineseName\":\"\",\"softwareVersion\":\"1.0.0\",\"isHighVoltage\":true,\"isDoorControl\":true,\"previousVersions\":[\"version 1.0\"],\"dependencies\":[],\"flashSequence\":1,\"estimateUpgradeTime\":50,\"resources\":{\"fullLicense\":\"license code\",\"fullCertificateUrl\":\"certificate url\",\"fullDownloadChecksum\":\"MD5 checksum\",\"fullDownloadUrl\":\"http://hhfota-q.bosch-mobility-solutions.cn/wpc/package/1.0/wpc.zip\",\"deltaLicense\":\"license code\",\"deltaCertificateUrl\":\"certificate url\",\"deltaChecksum\":\"MD5 checksum\",\"deltaDownloadUrl\":\"delta url\"},\"extendedAttributes\":[{\"extendedAttributeName\":\"attribute name 1\",\"extendedAttributesValue\":\"value\"},{\"extendedAttributeName\":\"attribute name 2\",\"extendedAttributesValue\":\"value\"}]}]}}";
 //http://hhfotatest.bosch-mobility-solutions.cn/wpc/package/1.0/wpc.zip
@@ -943,7 +1019,7 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
     case MG_EV_ACCEPT:
       g_ctx.dmc = nc;
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"DMC Socket Wrapper connected!\n");
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", g_stub_inventory);
+      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", &g_inventory[4]);
       dmc_resp_inventory(nc);
 
       break;
@@ -951,7 +1027,8 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"-----Received Raw Message from DMC----\n");
       //LOG_PRINT(IDCM_LOG_LEVEL_INFO,"%s \n", &(io->buf[4]));
       // first 4 bytes for length
-      len = ((unsigned)ubuf[3]) + ((unsigned)ubuf[2] << 8) + 
+      len = 
+          ((unsigned)ubuf[3]) + ((unsigned)ubuf[2] << 8) + 
           ((unsigned)ubuf[1] << 16) + ((unsigned)ubuf[0] << 24);
 
       if (io->len >= len + 4) {
@@ -1811,6 +1888,8 @@ int main(int argc, char *argv[]) {
   nc = mg_bind(&mgr, "8019", MG_CB(cgw_msg_handler, NULL));
   LOG_PRINT(IDCM_LOG_LEVEL_INFO, "Listen on port 8019 for CGW msg\n");
   mg_register_http_endpoint(nc, "/status", MG_CB(cgw_monitor_handle_status, NULL));
+  mg_register_http_endpoint(nc, "/stat/inventory", MG_CB(handle_rpt_inv, NULL));
+
   mg_set_protocol_http_websocket(nc);
 
   for (;;) {
