@@ -157,6 +157,12 @@ static void dmc_resp_inventory(struct mg_connection* nc)
     char* hdr = g_inventory;
 
     if (!nc) {
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "INFO,RSP_INV,DMC not online\n");
+        return;
+    }
+    if (strlen(&g_inventory[4]) == 0) {
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "INFO,RSP_INV,inv is empty now\n");
+
         return;
     }
 
@@ -168,10 +174,8 @@ static void dmc_resp_inventory(struct mg_connection* nc)
     hdr[3] = (char)(len);
 
 
-    printf("--- length to send: %d   \n", len);
-    printf("--- len in coding: %d %d %d %d \n", hdr[0], hdr[1], hdr[2], hdr[3]);
-
     mg_send(nc, hdr, len + 4);
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "INFO,RSP_INV,->,%d:%s\n", len, &g_inventory[4]);
 }
 
 
@@ -193,8 +197,11 @@ static void handle_rpt_inv(struct mg_connection* nc, int ev, void* ev_data)
     cJSON* payload = NULL;
     cJSON* vehicle = NULL;
 
+    LOG_PRINT(IDCM_LOG_LEVEL_INFO, "INFO,RPT_INV,%s\n", hm->body.p);
+
     root = cJSON_Parse(hm->body.p);
     if (!root) {
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "ERR,RPT_INV,parse document fail\n");
         return;
     }
     /*
@@ -211,30 +218,30 @@ static void handle_rpt_inv(struct mg_connection* nc, int ev, void* ev_data)
     //add dlc version
     payload = cJSON_GetObjectItem(root, "payload");
     if (!payload) {
-        fprintf(stderr, "ERR,RPT_INV,/payload not find\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "ERR,RPT_INV,/payload not find\n");
         goto DONE;
     }
     vehicle = cJSON_GetObjectItem(payload, "vehicleVersion");
     if (!vehicle) {
-        fprintf(stderr, "ERR,RPT_INV,/payload/vehicleVersion not find\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "ERR,RPT_INV,/payload/vehicleVersion not find\n");
         goto DONE;
     }
 
     ele = cJSON_CreateString(DLC_VER);
     if (!ele) {
-        fprintf(stderr, "ERR,RPT_INV,alloc DLC_VER string fail\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "ERR,RPT_INV,alloc DLC_VER string fail\n");
         goto DONE;
     }
     cJSON_AddItemToObject(vehicle, "dlc", ele);
 
     msg = cJSON_PrintUnformatted(root);
     if (!msg) {
-        fprintf(stderr, "ERR,RPT_INV,cJSON_PrintUnformatted fail\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "ERR,RPT_INV,cJSON_PrintUnformatted fail\n");
         goto DONE;
     }
 
     if (strlen(msg) + 5 > sizeof(g_inventory)) {
-        fprintf(stderr, "ERR,RPT_INV,g_inventory size too small\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "ERR,RPT_INV,g_inventory size too small\n");
         goto DONE;
     }
     strncpy(&g_inventory[4], msg, sizeof(g_inventory)-4);
@@ -296,7 +303,7 @@ static void * cgw_msg_monitor_thread(void *param) {
 
   nc = mg_bind_opt(&mgr, "8019", cgw_msg_handler MG_UD_ARG(NULL), bind_opts);
   if (nc == NULL) {
-    fprintf(stderr, "Error starting server on port %s: %s\n", "8019",
+    LOG_PRINT(IDCM_LOG_LEVEL_ERROR, "Error starting server on port %s: %s\n", "8019",
             *bind_opts.error_string);
     exit(1);
   }
@@ -866,7 +873,7 @@ static int dlc_download_l1_manifest_packages()
                 return (-1);
             }
         }
-        fprintf(stdout, "\n\n");
+        LOG_PRINT(IDCM_LOG_LEVEL_INFO, "\n\n");
     }
     LOG_PRINT(IDCM_LOG_LEVEL_INFO, "TLC downloading: curl work success!\n");
 
@@ -1019,7 +1026,6 @@ static void dmc_msg_handler(struct mg_connection *nc, int ev, void *p)
     case MG_EV_ACCEPT:
       g_ctx.dmc = nc;
       LOG_PRINT(IDCM_LOG_LEVEL_INFO,"DMC Socket Wrapper connected!\n");
-      LOG_PRINT(IDCM_LOG_LEVEL_INFO,"Report inventory:  %s\n", &g_inventory[4]);
       dmc_resp_inventory(nc);
 
       break;
